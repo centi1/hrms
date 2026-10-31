@@ -47,12 +47,15 @@
 			:class="photoRequired ? 'h-full overflow-y-auto' : 'h-120'"
 		>
 			<div class="flex flex-col gap-1.5 mt-2 items-center justify-center">
-				<div class="font-bold text-xl">
-					{{ dayjs(checkinTimestamp).format("hh:mm:ss a") }}
-				</div>
-				<div class="font-medium text-gray-500 text-sm">
-					{{ dayjs().format("D MMM, YYYY") }}
-				</div>
+				<template v-if="checkinTimestamp">
+					<div class="font-bold text-xl">
+						{{ dayjs(checkinTimestamp).format("hh:mm:ss a") }}
+					</div>
+					<div class="font-medium text-gray-500 text-sm">
+						{{ dayjs(checkinTimestamp).format("D MMM, YYYY") }}
+					</div>
+				</template>
+				<div v-else class="font-medium text-gray-500 text-sm">{{ __("Fetching time...") }}</div>
 			</div>
 
 			<template v-if="settings.data?.allow_geolocation_tracking">
@@ -150,6 +153,13 @@ const canSubmit = computed(() => {
 })
 
 const checkinRequest = createResource({ url: "hrms.api.create_employee_checkin" })
+// the checkin is recorded at server time, so show that rather than the phone's clock
+const serverTime = createResource({
+	url: "hrms.api.get_server_time",
+	onSuccess(data) {
+		checkinTimestamp.value = data
+	},
+})
 
 const checkins = createListResource({
 	doctype: DOCTYPE,
@@ -253,7 +263,8 @@ const onModalDismiss = () => {
 }
 
 const handleEmployeeCheckin = () => {
-	checkinTimestamp.value = dayjs().format("YYYY-MM-DD HH:mm:ss")
+	checkinTimestamp.value = null
+	serverTime.fetch()
 
 	if (settings.data?.allow_geolocation_tracking) {
 		fetchLocation()
@@ -287,7 +298,7 @@ const submitLog = (logType) => {
 				modalController.dismiss()
 				toast({
 					title: __("Success"),
-					text: __("{0} successful!", [actionLabel]),
+					text: __("{0} successful at {1}", [actionLabel, dayjs(data.time).format("hh:mm:ss a")]),
 					icon: "check-circle",
 					position: "bottom-center",
 					iconClasses: "text-green-500",

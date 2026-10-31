@@ -113,6 +113,12 @@ def get_hr_settings() -> dict:
 
 
 # Employee Checkin
+@frappe.whitelist()
+def get_server_time() -> str:
+	"""Checkins are recorded at server time; the app shows this instead of the phone's clock."""
+	return now_datetime().strftime("%Y-%m-%d %H:%M:%S")
+
+
 CHECKIN_PHOTO_TYPES = {"data:image/jpeg;base64,": "jpg", "data:image/png;base64,": "png"}
 CHECKIN_PHOTO_MAX_BYTES = 2 * 1024 * 1024
 
