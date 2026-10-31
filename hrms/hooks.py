@@ -51,7 +51,11 @@ app_include_icons = ["/assets/hrms/icons/module-icons.svg"]
 
 # include js in doctype views
 doctype_js = {
-	"Employee": ["public/js/erpnext/employee.js", "public/js/erpnext/employee_overview.js"],
+	"Employee": [
+		"public/js/erpnext/employee.js",
+		"public/js/erpnext/employee_overview.js",
+		"public/js/erpnext/employee_attendance_heatmap.js",
+	],
 	"Company": "public/js/erpnext/company.js",
 	"Department": "public/js/erpnext/department.js",
 	"Timesheet": "public/js/erpnext/timesheet.js",

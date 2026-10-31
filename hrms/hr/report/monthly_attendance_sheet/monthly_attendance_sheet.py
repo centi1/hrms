@@ -189,7 +189,7 @@ def get_columns(filters: Filters) -> list[dict]:
 		)
 	else:
 		columns.append({"label": _("Shift"), "fieldname": "shift", "fieldtype": "Data", "width": 120})
-		columns.extend(get_columns_for_days(filters))
+		columns.extend(get_columns_for_days(filters, with_month_columns=True))
 
 	return columns
 
@@ -203,11 +203,17 @@ def get_columns_for_leave_types() -> list[dict]:
 	return types
 
 
-def get_columns_for_days(filters: Filters) -> list[dict]:
+def get_columns_for_days(filters: Filters, with_month_columns: bool = False) -> list[dict]:
+	"""Day columns; with_month_columns adds a column before each month's first day that shows the
+	employee's present / working days for that month, so month boundaries stand out mid-week."""
 	days = []
 	dates_in_period = get_dates_in_period(filters)
 	for d in dates_in_period:
 		d = getdate(d)
+		if with_month_columns and (d.day == 1 or not days):
+			days.append(
+				{"label": d.strftime("%B %Y"), "fieldtype": "Data", "fieldname": month_fieldname(d), "width": 110}
+			)
 		# gets abbr from weekday number
 		abbr_weekday = day_abbr[d.weekday()]
 		# sets days as 1 Mon, 2 Tue, 3 Wed
@@ -215,6 +221,29 @@ def get_columns_for_days(filters: Filters) -> list[dict]:
 		days.append({"label": label, "fieldtype": "Data", "fieldname": d.strftime("%d-%m-%Y"), "width": 65})
 
 	return days
+
+
+def month_fieldname(d: date) -> str:
+	return d.strftime("month_%Y_%m")
+
+
+def get_month_summaries(status_by_date: dict) -> dict[str, str]:
+	"""{month fieldname: "present/working"} where working days exclude holidays and weekly offs,
+	and a half day counts as 0.5 (1 when the other half is marked present)."""
+	present_value = {
+		"Present": 1,
+		"Work From Home": 1,
+		"Half Day/Other Half Present": 1,
+		"Half Day/Other Half Absent": 0.5,
+	}
+	months = {}
+	for d, status in status_by_date.items():
+		if status in ("Holiday", "Weekly Off"):
+			continue
+		month = months.setdefault(month_fieldname(d), [0, 0])
+		month[0] += present_value.get(status, 0)
+		month[1] += 1
+	return {key: f"{present:g}/{working}" for key, (present, working) in months.items()}
 
 
 def get_dates_in_period(filters: Filters) -> list[str]:
@@ -714,6 +743,7 @@ def get_attendance_status_for_detailed_view(
 	            'Morning Shift': {1: 'Present', 2: 'Absent', ...}
 	            'Evening Shift': {1: 'Absent', 2: 'Present', ...}
 	    },"""
+		status_by_date = {}
 		for d in total_days:
 			d = getdate(d)
 
@@ -721,6 +751,7 @@ def get_attendance_status_for_detailed_view(
 
 			if status is None and holidays:
 				status = get_holiday_status(d, holidays)
+			status_by_date[d] = status
 
 			abbr = status_map.get(status, "")
 			marker = (filters.attendance_markers or {}).get((employee, shift, d))
@@ -730,6 +761,14 @@ def get_attendance_status_for_detailed_view(
 				abbr = f"{abbr}{marker}"
 			row[d.strftime("%d-%m-%Y")] = abbr
 
+		# working days only count while employed and up to today
+		joined = frappe.get_cached_value("Employee", employee, "date_of_joining")
+		today = getdate()
+		row.update(
+			get_month_summaries(
+				{d: v for d, v in status_by_date.items() if (not joined or d >= getdate(joined)) and d <= today}
+			)
+		)
 		attendance_values.append(row)
 
 	return attendance_values

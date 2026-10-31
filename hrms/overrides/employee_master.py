@@ -186,6 +186,69 @@ def get_timeline_data(doctype: str, name: str) -> dict:
 
 
 @frappe.whitelist()
+def get_attendance_heatmap(employee: str) -> dict:
+	"""Colour codes for the Employee attendance heatmap, matching the Monthly Attendance Sheet:
+	{"days": {"YYYY-MM-DD": "P" | "HD" | "SP" | "✓"}, "months": {"YYYY-MM": "present/working"}}.
+	Working days count from the employee's first attendance record (or joining) up to today."""
+	from hrms.hr.report.monthly_attendance_sheet.monthly_attendance_sheet import (
+		get_attendance_markers,
+		get_month_summaries,
+		get_pending_punch_markers,
+	)
+	from hrms.utils import get_date_range
+	from hrms.utils.holiday_list import get_holiday_dates_between_range
+
+	frappe.has_permission("Employee", "read", employee, throw=True)
+	frappe.has_permission("Attendance", "read", throw=True)
+
+	end = getdate()
+	start = add_years(end, -1)
+	company, joined = frappe.db.get_value("Employee", employee, ["company", "date_of_joining"])
+
+	attendance = frappe.get_all(
+		"Attendance",
+		filters={"employee": employee, "docstatus": 1, "attendance_date": ("between", [start, end])},
+		fields=["name", "employee", "attendance_date", "status", "half_day_status", "shift", "attendance_request"],
+		order_by="attendance_date",
+	)
+	markers = get_attendance_markers(attendance)
+	markers.update(
+		get_pending_punch_markers(
+			frappe._dict(
+				filter_based_on="Date Range", start_date=start, end_date=end, companies=[company], employee=employee
+			)
+		)
+	)
+
+	days, status_by_date = {}, {}
+	codes = {"Present": "P", "Work From Home": "P", "Half Day": "HD"}
+	for d in attendance:
+		marker = markers.get((d.employee, d.shift or "", d.attendance_date))
+		code = "✓" if marker == "✓" else marker if marker == "SP" else codes.get(d.status)
+		if code:
+			days[str(d.attendance_date)] = code
+		status_by_date[d.attendance_date] = (
+			f"Half Day/Other Half {d.half_day_status or 'Absent'}" if d.status == "Half Day" else d.status
+		)
+	# today's punches, before attendance is marked
+	for (_employee, _shift, day), marker in markers.items():
+		if str(day) not in days and marker in ("SP", "P", "HD"):
+			days[str(day)] = marker
+
+	if attendance:
+		first = max(attendance[0].attendance_date, getdate(joined) if joined else attendance[0].attendance_date)
+		holidays = set(get_holiday_dates_between_range(employee, first, end, raise_exception_for_holiday_list=False))
+		for date in get_date_range(first, end):
+			date = getdate(date)
+			status_by_date.setdefault(date, "Holiday" if date in holidays else None)
+			if date in holidays:
+				status_by_date[date] = "Holiday"
+
+	months = {key.replace("month_", "").replace("_", "-"): value for key, value in get_month_summaries(status_by_date).items()}
+	return {"days": days, "months": months}
+
+
+@frappe.whitelist()
 def get_assignable_masters(company: str) -> dict[str, bool]:
 	"""Return whether a submitted master exists for each gated Employee assignment action"""
 	masters = {

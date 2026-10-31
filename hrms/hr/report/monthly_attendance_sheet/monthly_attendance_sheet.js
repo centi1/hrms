@@ -165,7 +165,9 @@ frappe.query_reports["Monthly Attendance Sheet"] = {
 		}
 
 		if (!summarized_view) {
-			if ((group_by && column.colIndex > 3) || (!group_by && column.colIndex > 2)) {
+			if (column.fieldname?.startsWith("month_")) {
+				value = format_month_cell(value);
+			} else if ((group_by && column.colIndex > 3) || (!group_by && column.colIndex > 2)) {
 				value = format_day_cell(value);
 			}
 		}
@@ -193,6 +195,13 @@ function format_day_cell(value) {
 	else return "<span style='color:#878787'>" + value + "</span>";
 
 	return `<span style="${style};display:block;text-align:center;border-radius:4px;font-weight:500">${value}</span>`;
+}
+
+// month separator column: the employee's present / working days for that month
+function format_month_cell(value) {
+	const text = $("<div>").html(value).text().trim();
+	if (!text) return value;
+	return `<span style="display:block;text-align:center;font-weight:600;color:#1f2937;background:#f1f3f5;border-left:3px solid #868e96;border-radius:4px" title="${__("Present days / working days")}">${text}</span>`;
 }
 
 function set_reqd_filter(fieldname, is_reqd) {

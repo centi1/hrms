@@ -12,6 +12,9 @@
 				/>
 				<span class="text-lg text-gray-800 font-bold">
 					{{ firstOfMonth.format("MMMM") }} {{ firstOfMonth.format("YYYY") }}
+					<span class="text-gray-600 font-semibold" :title="__('Present days / working days')">
+						({{ presentDays }}/{{ workingDays }})
+					</span>
 				</span>
 				<Button
 					icon="chevron-right"
@@ -28,7 +31,12 @@
 				>
 					{{ day }}
 				</div>
-				<div v-for="_ in firstOfMonth.get('d')" />
+				<!-- end of the previous month, so the 1st falls under its weekday -->
+				<div v-for="date in leadingDates" :key="date.format('YYYY-MM-DD')">
+					<div class="h-8 w-8 flex rounded-full mx-auto">
+						<span class="text-gray-300 text-sm font-medium m-auto">{{ date.date() }}</span>
+					</div>
+				</div>
 				<div v-for="index in firstOfMonth.endOf('M').get('D')">
 					<div
 						class="h-8 w-8 flex rounded-full mx-auto"
@@ -37,6 +45,12 @@
 						<span class="text-gray-800 text-sm font-medium m-auto">
 							{{ index }}
 						</span>
+					</div>
+				</div>
+				<!-- start of the next month, completing the last week -->
+				<div v-for="date in trailingDates" :key="date.format('YYYY-MM-DD')">
+					<div class="h-8 w-8 flex rounded-full mx-auto">
+						<span class="text-gray-300 text-sm font-medium m-auto">{{ date.date() }}</span>
 					</div>
 				</div>
 			</div>
@@ -94,6 +108,30 @@ const summary = computed(() => {
 	return summary
 })
 
+// weeks start on Monday
+const leadingDates = computed(() => {
+	const count = (firstOfMonth.value.day() + 6) % 7
+	return Array.from({ length: count }, (_, i) => firstOfMonth.value.subtract(count - i, "day"))
+})
+
+const trailingDates = computed(() => {
+	const daysInMonth = firstOfMonth.value.daysInMonth()
+	const count = (7 - ((leadingDates.value.length + daysInMonth) % 7)) % 7
+	const nextMonth = firstOfMonth.value.add(1, "M")
+	return Array.from({ length: count }, (_, i) => nextMonth.add(i, "day"))
+})
+
+// working days exclude holidays and weekly offs; a half day counts as half a present day
+const workingDays = computed(() => {
+	const holidays = Object.values(calendarEvents.data || {}).filter((status) => status === "Holiday").length
+	return firstOfMonth.value.daysInMonth() - holidays
+})
+
+const presentDays = computed(() => {
+	const value = { Present: 1, "Work From Home": 1, "Half Day": 0.5 }
+	return Object.values(calendarEvents.data || {}).reduce((total, status) => total + (value[status] || 0), 0)
+})
+
 watch(
 	() => firstOfMonth.value,
 	() => {
@@ -108,13 +146,13 @@ const getEventOnDate = (date) => {
 const getFirstLetter = (s) => Array.from(s.trim())[0] // Unicode
 
 const DAYS = [
-	getFirstLetter(__("Sunday")),
 	getFirstLetter(__("Monday")),
 	getFirstLetter(__("Tuesday")),
 	getFirstLetter(__("Wednesday")),
 	getFirstLetter(__("Thursday")),
 	getFirstLetter(__("Friday")),
 	getFirstLetter(__("Saturday")),
+	getFirstLetter(__("Sunday")),
 ]
 
 //resources
