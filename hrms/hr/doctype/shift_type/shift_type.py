@@ -52,6 +52,7 @@ class ShiftType(Document):
 		absent_buffer_days: DF.Int
 		allow_check_out_after_shift_end_time: DF.Int
 		allow_overtime: DF.Check
+		attendance_rule: DF.Literal["Working Hours", "Punch Windows"]
 		auto_update_last_sync: DF.Check
 		begin_check_in_before_shift_start_time: DF.Int
 		color: DF.Literal[
@@ -66,13 +67,17 @@ class ShiftType(Document):
 		enable_early_exit_marking: DF.Check
 		enable_late_entry_marking: DF.Check
 		end_time: DF.Time
+		half_day_window_end: DF.Time | None
+		half_day_window_start: DF.Time | None
 		holiday_list: DF.Link | None
 		last_sync_of_checkin: DF.Datetime | None
 		late_entry_grace_period: DF.Int
 		mark_auto_attendance_on_holidays: DF.Check
+		morning_check_in_until: DF.Time | None
 		overtime_type: DF.Link | None
 		process_attendance_after: DF.Date | None
 		start_time: DF.Time
+		status_for_other_punches: DF.Literal["Half Day", "Absent", "Present"]
 		working_hours_calculation_based_on: DF.Literal[
 			"First Check-in and Last Check-out", "Every Valid Check-in and Check-out"
 		]
@@ -87,6 +92,27 @@ class ShiftType(Document):
 		self.validate_circular_shift(start, end)
 		self.validate_unlinked_logs()
 		self.validate_absent_buffer_days()
+		self.validate_punch_windows(start, end)
+
+	def validate_punch_windows(self, start_time: datetime.time, end_time: datetime.time):
+		if self.attendance_rule != "Punch Windows":
+			return
+
+		if end_time < start_time:
+			frappe.throw(
+				title=_("Invalid Punch Windows"),
+				msg=_("Punch windows are not supported for shifts that end on the next day."),
+			)
+
+		morning = get_time(self.morning_check_in_until)
+		window_start, window_end = get_time(self.half_day_window_start), get_time(self.half_day_window_end)
+		if not (morning < window_start < window_end < end_time):
+			frappe.throw(
+				title=_("Invalid Punch Windows"),
+				msg=_(
+					"Morning check-in, the mid-day window and the shift end must follow each other in that order."
+				),
+			)
 
 	def validate_same_start_and_end(self, start_time: datetime.time, end_time: datetime.time):
 		if start_time == end_time:
@@ -309,6 +335,12 @@ class ShiftType(Document):
 		):
 			early_exit = True
 
+		if self.attendance_rule == "Punch Windows":
+			status = self.get_status_by_punch_windows(logs[0], in_time, out_time)
+			if late_entry and self.is_in_mid_day_window(logs[0], in_time):
+				late_entry = False  # a second-half check-in is a half day, not a late entry
+			return status, total_working_hours, late_entry, early_exit, in_time, out_time
+
 		if working_hours_threshold_for_absent and total_working_hours < working_hours_threshold_for_absent:
 			return "Absent", total_working_hours, late_entry, early_exit, in_time, out_time
 
@@ -319,6 +351,32 @@ class ShiftType(Document):
 			return "Half Day", total_working_hours, late_entry, early_exit, in_time, out_time
 
 		return "Present", total_working_hours, late_entry, early_exit, in_time, out_time
+
+	def get_status_by_punch_windows(self, log, in_time: datetime | None, out_time: datetime | None) -> str:
+		"""Present: morning check-in and check-out at the shift end.
+		Half Day: morning check-in and mid-day check-out (first half), or mid-day check-in
+		and check-out at the shift end (second half)."""
+		morning_until = datetime.combine(log.shift_start.date(), get_time(self.morning_check_in_until))
+		full_day_out = log.shift_end - timedelta(minutes=cint(self.early_exit_grace_period))
+
+		morning_in = bool(in_time) and in_time <= morning_until
+		mid_day_in = self.is_in_mid_day_window(log, in_time)
+		end_out = bool(out_time) and out_time >= full_day_out
+		mid_day_out = self.is_in_mid_day_window(log, out_time)
+
+		if morning_in and end_out:
+			return "Present"
+		if (morning_in and mid_day_out) or (mid_day_in and end_out):
+			return "Half Day"
+		return self.status_for_other_punches or "Half Day"
+
+	def is_in_mid_day_window(self, log, time: datetime | None) -> bool:
+		if not time:
+			return False
+		shift_date = log.shift_start.date()
+		window_start = datetime.combine(shift_date, get_time(self.half_day_window_start))
+		window_end = datetime.combine(shift_date, get_time(self.half_day_window_end))
+		return window_start <= time <= window_end
 
 	def mark_absent_for_dates_with_no_attendance(self, employee: str):
 		"""Marks Absents for the given employee on working days in this shift that have no attendance marked.

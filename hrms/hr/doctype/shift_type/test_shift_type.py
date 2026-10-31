@@ -263,6 +263,50 @@ class TestShiftType(HRMSTestSuite):
 		self.assertEqual(attendance.status, "Half Day")
 		self.assertEqual(attendance.working_hours, 1.5)
 
+	def test_punch_windows_attendance(self):
+		from hrms.hr.doctype.employee_checkin.test_employee_checkin import make_checkin
+
+		shift_type = setup_shift_type(
+			shift_type="Punch Windows Test",
+			start_time="09:00:00",
+			end_time="18:30:00",
+			begin_check_in_before_shift_start_time=120,
+			determine_check_in_and_check_out="Strictly based on Log Type in Employee Checkin",
+			attendance_rule="Punch Windows",
+			morning_check_in_until="09:30:00",
+			half_day_window_start="13:00:00",
+			half_day_window_end="14:00:00",
+			status_for_other_punches="Absent",
+			enable_late_entry_marking=1,
+			late_entry_grace_period=10,
+		)
+		date = getdate()
+		cases = {
+			"full_day": (("IN", "08:55"), ("OUT", "18:35"), "Present", 0),
+			"first_half": (("IN", "08:55"), ("OUT", "13:10"), "Half Day", 0),
+			"second_half": (("IN", "13:20"), ("OUT", "18:31"), "Half Day", 0),
+			"late_full_day": (("IN", "09:20"), ("OUT", "18:40"), "Present", 1),
+			"other": (("IN", "10:30"), ("OUT", "18:40"), "Absent", 1),
+		}
+		employees = {}
+		for case, (check_in, check_out, _status, _late) in cases.items():
+			employee = make_employee(f"test_punch_windows_{case}@example.com", company="_Test Company")
+			make_shift_assignment(shift_type.name, employee, date)
+			for log_type, time in (check_in, check_out):
+				make_checkin(employee, datetime.combine(date, get_time(time)), log_type=log_type)
+			employees[case] = employee
+
+		shift_type.process_auto_attendance()
+
+		for case, (_in, _out, status, late) in cases.items():
+			attendance = frappe.db.get_value(
+				"Attendance",
+				{"employee": employees[case], "attendance_date": date},
+				["status", "late_entry"],
+				as_dict=True,
+			)
+			self.assertEqual((attendance.status, attendance.late_entry), (status, late), case)
+
 	def test_working_hours_threshold_for_absent(self):
 		from hrms.hr.doctype.employee_checkin.test_employee_checkin import make_checkin
 

@@ -17,6 +17,7 @@
   "auto_attendance_settings_section",
   "determine_check_in_and_check_out",
   "working_hours_calculation_based_on",
+  "attendance_rule",
   "begin_check_in_before_shift_start_time",
   "allow_check_out_after_shift_end_time",
   "mark_auto_attendance_on_holidays",
@@ -27,6 +28,13 @@
   "process_attendance_after",
   "last_sync_of_checkin",
   "auto_update_last_sync",
+  "punch_windows_section",
+  "morning_check_in_until",
+  "column_break_pw1",
+  "half_day_window_start",
+  "half_day_window_end",
+  "column_break_pw2",
+  "status_for_other_punches",
   "grace_period_settings_auto_attendance_section",
   "enable_late_entry_marking",
   "late_entry_grace_period",
@@ -79,6 +87,7 @@
    "options": "First Check-in and Last Check-out\nEvery Valid Check-in and Check-out"
   },
   {
+   "depends_on": "eval:doc.attendance_rule!=\"Punch Windows\"",
    "description": "Working hours below which Half Day is marked. (Zero to disable)",
    "fieldname": "working_hours_threshold_for_half_day",
    "fieldtype": "Float",
@@ -87,6 +96,7 @@
    "precision": "2"
   },
   {
+   "depends_on": "eval:doc.attendance_rule!=\"Punch Windows\"",
    "description": "Working hours below which Absent is marked. (Zero to disable)",
    "fieldname": "working_hours_threshold_for_absent",
    "fieldtype": "Float",
@@ -223,11 +233,61 @@
    "label": "Overtime Type",
    "mandatory_depends_on": "eval:doc.allow_overtime == 1",
    "options": "Overtime Type"
+  },
+  {
+   "default": "Working Hours",
+   "description": "Working Hours: Present / Half Day / Absent from the hours between check-in and check-out and the thresholds below. Punch Windows: from when the employee checked in and out (morning, mid-day window, end of shift).",
+   "fieldname": "attendance_rule",
+   "fieldtype": "Select",
+   "label": "Decide Attendance By",
+   "options": "Working Hours\nPunch Windows"
+  },
+  {
+   "depends_on": "eval:doc.attendance_rule==\"Punch Windows\"",
+   "description": "Present: check-in by the morning cut-off and check-out at or after the shift end. Half Day: morning check-in with check-out in the mid-day window, or check-in in the mid-day window with check-out at or after the shift end.",
+   "fieldname": "punch_windows_section",
+   "fieldtype": "Section Break",
+   "label": "Punch Windows"
+  },
+  {
+   "description": "Latest check-in that still counts as a morning (full or first-half) check-in. Late entry is still flagged after the grace period.",
+   "fieldname": "morning_check_in_until",
+   "fieldtype": "Time",
+   "label": "Morning Check-in Until",
+   "mandatory_depends_on": "eval:doc.attendance_rule==\"Punch Windows\""
+  },
+  {
+   "fieldname": "column_break_pw1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "half_day_window_start",
+   "fieldtype": "Time",
+   "label": "Mid-day Window Start",
+   "mandatory_depends_on": "eval:doc.attendance_rule==\"Punch Windows\""
+  },
+  {
+   "fieldname": "half_day_window_end",
+   "fieldtype": "Time",
+   "label": "Mid-day Window End",
+   "mandatory_depends_on": "eval:doc.attendance_rule==\"Punch Windows\""
+  },
+  {
+   "fieldname": "column_break_pw2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Half Day",
+   "description": "Status when there are check-ins that match none of the patterns, e.g. a missing check-out.",
+   "fieldname": "status_for_other_punches",
+   "fieldtype": "Select",
+   "label": "Status for Other Punches",
+   "options": "Half Day\nAbsent\nPresent"
   }
  ],
  "icon": "clock",
  "links": [],
- "modified": "2026-10-05 15:00:00.000000",
+ "modified": "2026-10-31 16:00:00.000000",
  "modified_by": "Administrator",
  "module": "HR",
  "name": "Shift Type",
