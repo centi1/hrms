@@ -18,6 +18,7 @@ from erpnext.setup.doctype.employee.test_employee import make_employee
 
 from hrms.hr.doctype.attendance.attendance import mark_attendance
 from hrms.hr.doctype.employee_checkin.employee_checkin import (
+	CheckinPhotoRequiredError,
 	CheckinRadiusExceededError,
 	add_log_based_on_employee_field,
 	bulk_fetch_shift,
@@ -546,6 +547,62 @@ class TestEmployeeCheckin(HRMSTestSuite):
 		# not allowed as distance (15004m) is not within checkin radius
 		self.assertRaises(CheckinRadiusExceededError, log.insert)
 
+	@HRMSTestSuite.change_settings("HR Settings", {"allow_geolocation_tracking": 1})
+	def test_device_punch_skips_geolocation(self):
+		employee = make_employee("test_device_punch@example.com", company="_Test Company")
+		# synced device punches carry no phone location
+		log = make_checkin(employee)
+		self.assertTrue(log.name)
+
+		# an employee cannot skip the location check by setting a device id themselves
+		frappe.set_user("test_device_punch@example.com")
+		try:
+			log = frappe.get_doc({"doctype": "Employee Checkin", "employee": employee, "device_id": "device1"})
+			self.assertRaises(frappe.ValidationError, log.insert)
+		finally:
+			frappe.set_user("Administrator")
+
+	@HRMSTestSuite.change_settings("HR Settings", {"require_photo_for_mobile_checkin": 1})
+	def test_checkin_photo_required_for_self_service(self):
+		user = "test_checkin_photo@example.com"
+		employee = make_employee(user, company="_Test Company")
+
+		# device punches and HR entries need no photo
+		make_checkin(employee, now_datetime() - timedelta(hours=1))
+
+		frappe.set_user(user)
+		try:
+			log = frappe.get_doc({"doctype": "Employee Checkin", "employee": employee, "log_type": "IN"})
+			self.assertRaises(CheckinPhotoRequiredError, log.insert)
+
+			# a photo uploaded by someone else is rejected
+			frappe.set_user("Administrator")
+			other = make_checkin_photo()
+			frappe.set_user(user)
+			log = frappe.get_doc(
+				{"doctype": "Employee Checkin", "employee": employee, "log_type": "IN", "checkin_photo": other}
+			)
+			self.assertRaises(CheckinPhotoRequiredError, log.insert)
+
+			# a stale photo is rejected
+			stale = make_checkin_photo()
+			frappe.db.set_value("File", {"file_url": stale}, "creation", now_datetime() - timedelta(hours=1))
+			log = frappe.get_doc(
+				{"doctype": "Employee Checkin", "employee": employee, "log_type": "IN", "checkin_photo": stale}
+			)
+			self.assertRaises(CheckinPhotoRequiredError, log.insert)
+
+			from hrms.api import create_employee_checkin
+
+			result = create_employee_checkin("IN", photo="data:image/png;base64," + TINY_PNG)
+			log = frappe.get_doc("Employee Checkin", result["name"])
+			self.assertTrue(log.checkin_photo)
+			self.assertEqual(
+				frappe.db.get_value("File", {"file_url": log.checkin_photo}, "attached_to_name"), log.name
+			)
+		finally:
+			frappe.set_user("Administrator")
+
 	def test_bulk_fetch_shift(self):
 		emp1 = make_employee("emp1@example.com", company="_Test Company")
 		emp2 = make_employee("emp2@example.com", company="_Test Company")
@@ -968,6 +1025,26 @@ def make_checkin(employee, time=None, latitude=None, longitude=None, log_type="I
 		}
 	).insert()
 	return log
+
+
+TINY_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
+
+def make_checkin_photo():
+	import base64
+
+	return (
+		frappe.get_doc(
+			{
+				"doctype": "File",
+				"file_name": "checkin-test.png",
+				"content": base64.b64decode(TINY_PNG),
+				"is_private": 1,
+			}
+		)
+		.insert()
+		.file_url
+	)
 
 
 def make_shift_location(location_name, latitude, longitude, checkin_radius=500):

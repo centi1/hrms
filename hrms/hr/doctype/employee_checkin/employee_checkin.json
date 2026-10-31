@@ -17,6 +17,8 @@
   "device_id",
   "skip_auto_attendance",
   "attendance",
+  "photo_section",
+  "checkin_photo",
   "location_section",
   "latitude",
   "column_break_yqpi",
@@ -24,6 +26,7 @@
   "section_break_ksbo",
   "fetch_geolocation",
   "geolocation",
+  "distance_from_shift_location",
   "shift_timings_section",
   "shift_start",
   "shift_end",
@@ -183,11 +186,33 @@
    "hidden": 1,
    "label": "Overtime Type",
    "options": "Overtime Type"
+  },
+  {
+   "depends_on": "eval:doc.checkin_photo",
+   "fieldname": "photo_section",
+   "fieldtype": "Section Break",
+   "label": "Check-in Photo"
+  },
+  {
+   "description": "Selfie taken with the live front camera in the mobile app at the time of the check-in",
+   "fieldname": "checkin_photo",
+   "fieldtype": "Attach Image",
+   "label": "Check-in Photo",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "distance_from_shift_location",
+   "fieldtype": "Int",
+   "label": "Distance from Shift Location (m)",
+   "no_copy": 1,
+   "read_only": 1
   }
  ],
  "icon": "fingerprint-pattern",
+ "image_field": "checkin_photo",
  "links": [],
- "modified": "2026-10-19 13:00:00.000000",
+ "modified": "2026-10-31 14:00:00.000000",
  "modified_by": "Administrator",
  "module": "HR",
  "name": "Employee Checkin",

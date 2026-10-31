@@ -2,8 +2,8 @@
  "actions": [],
  "creation": "2013-08-02 13:45:23",
  "doctype": "DocType",
- "documentation": "https://docs.frappe.io/hr/hr-settings",
  "document_type": "Other",
+ "documentation": "https://docs.frappe.io/hr/hr-settings",
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
@@ -43,6 +43,7 @@
   "attendance_settings_section",
   "allow_employee_checkin_from_mobile_app",
   "allow_geolocation_tracking",
+  "require_photo_for_mobile_checkin",
   "tenure_tab",
   "employee_exit_settings_section",
   "exit_questionnaire_web_form",
@@ -359,13 +360,21 @@
    "fieldname": "employee_exit_settings_section",
    "fieldtype": "Section Break",
    "label": "Employee Exit Settings"
+  },
+  {
+   "default": "0",
+   "depends_on": "allow_employee_checkin_from_mobile_app",
+   "description": "Employees must take a selfie with the live front camera when checking in or out from the mobile app. Device punches and HR entries are not affected.",
+   "fieldname": "require_photo_for_mobile_checkin",
+   "fieldtype": "Check",
+   "label": "Require Photo for Mobile Checkin"
   }
  ],
  "icon": "settings",
  "idx": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-10-06 14:00:00.000000",
+ "modified": "2026-10-31 14:00:00.000000",
  "modified_by": "Administrator",
  "module": "HR",
  "name": "HR Settings",

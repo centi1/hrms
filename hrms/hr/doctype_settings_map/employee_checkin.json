@@ -16,11 +16,15 @@
    "settings_doctype": "HR Settings"
   },
   {
+   "setting_field": "require_photo_for_mobile_checkin",
+   "settings_doctype": "HR Settings"
+  },
+  {
    "setting_field": "standard_working_hours",
    "settings_doctype": "HR Settings"
   }
  ],
- "modified": "2026-07-16 00:00:00.000000",
+ "modified": "2026-10-31 14:00:00.000000",
  "modified_by": "Administrator",
  "module": "HR",
  "name": "Employee Checkin - HR",

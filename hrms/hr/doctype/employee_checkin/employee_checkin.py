@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import cint, get_datetime
+from frappe.utils import add_to_date, cint, get_datetime, now_datetime
 
 from hrms.hr.doctype.shift_assignment.shift_assignment import get_actual_start_end_datetime_of_shift
 from hrms.hr.utils import (
@@ -21,6 +21,14 @@ class CheckinRadiusExceededError(frappe.ValidationError):
 	pass
 
 
+class CheckinPhotoRequiredError(frappe.ValidationError):
+	pass
+
+
+# a selfie must be uploaded shortly before the check-in it belongs to
+CHECKIN_PHOTO_MAX_AGE_MINUTES = 5
+
+
 class EmployeeCheckin(Document):
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
@@ -31,7 +39,9 @@ class EmployeeCheckin(Document):
 		from frappe.types import DF
 
 		attendance: DF.Link | None
+		checkin_photo: DF.AttachImage | None
 		device_id: DF.Data | None
+		distance_from_shift_location: DF.Int
 		employee: DF.Link
 		employee_name: DF.Data | None
 		latitude: DF.Float
@@ -58,6 +68,41 @@ class EmployeeCheckin(Document):
 		self.fetch_shift()
 		self.set_geolocation()
 		self.validate_distance_from_shift_location()
+		self.validate_checkin_photo()
+
+	def is_self_service(self) -> bool:
+		"""True when the employee is logging their own check-in (mobile app / portal),
+		as opposed to a device sync or an HR correction made by another user."""
+		user_id = frappe.db.get_value("Employee", self.employee, "user_id")
+		return bool(user_id) and user_id == frappe.session.user
+
+	def validate_checkin_photo(self):
+		if not self.is_new() or not self.is_self_service():
+			return
+
+		if not self.checkin_photo:
+			if frappe.db.get_single_value("HR Settings", "require_photo_for_mobile_checkin"):
+				frappe.throw(
+					_("A photo taken with the camera is required for checking in."),
+					exc=CheckinPhotoRequiredError,
+				)
+			return
+
+		# the photo must be a fresh private upload by the same user, not reused
+		file = frappe.db.get_value(
+			"File",
+			{"file_url": self.checkin_photo},
+			["owner", "creation", "is_private", "attached_to_doctype", "attached_to_name"],
+			as_dict=True,
+		)
+		if (
+			not file
+			or file.owner != frappe.session.user
+			or not file.is_private
+			or file.attached_to_name
+			or get_datetime(file.creation) < add_to_date(now_datetime(), minutes=-CHECKIN_PHOTO_MAX_AGE_MINUTES)
+		):
+			frappe.throw(_("Please take a new photo for this check-in."), exc=CheckinPhotoRequiredError)
 
 	def validate_duplicate_log(self):
 		doc = frappe.db.exists(
@@ -123,6 +168,10 @@ class EmployeeCheckin(Document):
 		if not frappe.db.get_single_value("HR Settings", "allow_geolocation_tracking"):
 			return
 
+		# punches synced from a fixed biometric device carry no phone location
+		if self.device_id and not self.is_self_service():
+			return
+
 		if not (self.latitude or self.longitude):
 			frappe.throw(_("Latitude and longitude values are required for checking in."))
 
@@ -149,6 +198,7 @@ class EmployeeCheckin(Document):
 			return
 
 		distance = get_distance_between_coordinates(latitude, longitude, self.latitude, self.longitude)
+		self.distance_from_shift_location = round(distance)
 		if distance > checkin_radius:
 			frappe.throw(
 				_("You must be within {0} meters of your shift location to check in.").format(checkin_radius),

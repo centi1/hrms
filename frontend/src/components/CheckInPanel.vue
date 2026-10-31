@@ -39,8 +39,13 @@
 		trigger="open-checkin-modal"
 		:initial-breakpoint="1"
 		:breakpoints="[0, 1]"
+		@didPresent="onModalPresent"
+		@didDismiss="onModalDismiss"
 	>
-		<div class="h-120 w-full flex flex-col items-center justify-center gap-5 p-4 mb-5">
+		<div
+			class="w-full flex flex-col items-center justify-center gap-5 p-4 mb-5"
+			:class="photoRequired ? 'h-full overflow-y-auto' : 'h-120'"
+		>
 			<div class="flex flex-col gap-1.5 mt-2 items-center justify-center">
 				<div class="font-bold text-xl">
 					{{ dayjs(checkinTimestamp).format("hh:mm:ss a") }}
@@ -70,7 +75,40 @@
 				</div>
 			</template>
 
-			<Button :loading="checkins.insert.loading" variant="solid" class="w-full py-5 text-sm disabled:bg-gray-700" @click="submitLog(nextAction.action)">
+			<template v-if="photoRequired">
+				<div
+					class="relative rounded border-4 overflow-hidden w-full h-64 bg-gray-900 flex items-center justify-center"
+				>
+					<img v-if="photo" :src="photo" class="h-full w-full object-cover" />
+					<video
+						v-else
+						ref="video"
+						autoplay
+						playsinline
+						muted
+						class="h-full w-full object-cover -scale-x-100"
+					></video>
+					<span v-if="cameraStatus" class="absolute px-4 text-center text-sm text-white">
+						{{ cameraStatus }}
+					</span>
+				</div>
+				<Button v-if="photo" class="w-full py-5 text-sm" @click="startCamera">
+					<template #prefix><FeatherIcon name="refresh-cw" class="w-4" /></template>
+					{{ __("Retake Photo") }}
+				</Button>
+				<Button v-else class="w-full py-5 text-sm" :disabled="!cameraReady" @click="capturePhoto">
+					<template #prefix><FeatherIcon name="camera" class="w-4" /></template>
+					{{ __("Take Photo") }}
+				</Button>
+			</template>
+
+			<Button
+				:loading="checkinRequest.loading"
+				:disabled="!canSubmit"
+				variant="solid"
+				class="w-full py-5 text-sm disabled:bg-gray-700"
+				@click="submitLog(nextAction.action)"
+			>
 				{{ __("Confirm {0}", [nextAction.label]) }}
 			</Button>
 		</div>
@@ -78,14 +116,15 @@
 </template>
 
 <script setup>
-import { createListResource, toast, FeatherIcon } from "frappe-ui"
-import { computed, inject, ref, onMounted, onBeforeUnmount } from "vue"
+import { createListResource, createResource, toast, FeatherIcon } from "frappe-ui"
+import { computed, inject, nextTick, ref, onMounted, onBeforeUnmount } from "vue"
 import { IonModal, modalController } from "@ionic/vue"
 
 import { formatTimestamp } from "@/utils/formatters"
 import { settings } from "@/data/settings"
 
 const DOCTYPE = "Employee Checkin"
+const PHOTO_MAX_WIDTH = 640
 
 const socket = inject("$socket")
 const employee = inject("$employee")
@@ -95,6 +134,22 @@ const checkinTimestamp = ref(null)
 const latitude = ref(0)
 const longitude = ref(0)
 const locationStatus = ref("")
+
+const video = ref(null)
+const photo = ref(null)
+const cameraReady = ref(false)
+const cameraStatus = ref("")
+let cameraStream = null
+
+const photoRequired = computed(() => Boolean(settings.data?.require_photo_for_mobile_checkin))
+
+const canSubmit = computed(() => {
+	if (photoRequired.value && !photo.value) return false
+	if (settings.data?.allow_geolocation_tracking && !(latitude.value && longitude.value)) return false
+	return true
+})
+
+const checkinRequest = createResource({ url: "hrms.api.create_employee_checkin" })
 
 const checkins = createListResource({
 	doctype: DOCTYPE,
@@ -145,6 +200,58 @@ const fetchLocation = () => {
 	}
 }
 
+// live front camera only: the photo is taken now, never picked from the gallery
+const startCamera = async () => {
+	stopCamera()
+	photo.value = null
+	await nextTick()
+
+	if (!navigator.mediaDevices?.getUserMedia) {
+		cameraStatus.value = __("Camera is not available in this browser")
+		return
+	}
+
+	cameraStatus.value = __("Starting camera...")
+	try {
+		cameraStream = await navigator.mediaDevices.getUserMedia({
+			video: { facingMode: "user", width: { ideal: 1280 } },
+			audio: false,
+		})
+		video.value.srcObject = cameraStream
+		await video.value.play()
+		cameraReady.value = true
+		cameraStatus.value = ""
+	} catch (error) {
+		cameraStatus.value = __("Unable to access the camera: {0}", [error.message])
+	}
+}
+
+const stopCamera = () => {
+	cameraStream?.getTracks().forEach((track) => track.stop())
+	cameraStream = null
+	cameraReady.value = false
+}
+
+const capturePhoto = () => {
+	const scale = Math.min(1, PHOTO_MAX_WIDTH / video.value.videoWidth)
+	const canvas = document.createElement("canvas")
+	canvas.width = Math.round(video.value.videoWidth * scale)
+	canvas.height = Math.round(video.value.videoHeight * scale)
+	canvas.getContext("2d").drawImage(video.value, 0, 0, canvas.width, canvas.height)
+	photo.value = canvas.toDataURL("image/jpeg", 0.8)
+	stopCamera()
+}
+
+const onModalPresent = () => {
+	if (photoRequired.value) startCamera()
+}
+
+const onModalDismiss = () => {
+	stopCamera()
+	photo.value = null
+	cameraStatus.value = ""
+}
+
 const handleEmployeeCheckin = () => {
 	checkinTimestamp.value = dayjs().format("YYYY-MM-DD HH:mm:ss")
 
@@ -156,11 +263,10 @@ const handleEmployeeCheckin = () => {
 const submitLog = (logType) => {
 	const actionLabel = logType === "IN" ? __("Check-in") : __("Check-out")
 
-	checkins.insert.submit(
+	checkinRequest.submit(
 		{
-			employee: employee.data.name,
 			log_type: logType,
-			time: checkinTimestamp.value,
+			photo: photo.value,
 			latitude: latitude.value,
 			longitude: longitude.value,
 		},
@@ -177,6 +283,7 @@ const submitLog = (logType) => {
 					return
 				}
 
+				checkins.reload()
 				modalController.dismiss()
 				toast({
 					title: __("Success"),
@@ -213,6 +320,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+	stopCamera()
 	socket.emit("doctype_unsubscribe", DOCTYPE)
 	socket.off("list_update")
 })

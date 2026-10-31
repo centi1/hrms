@@ -1,9 +1,12 @@
+import base64
+import binascii
+
 import frappe
 from frappe import _
 from frappe.model import get_permitted_fields
 from frappe.model.workflow import get_workflow_name
 from frappe.query_builder import Order
-from frappe.utils import add_days, date_diff, getdate, strip_html
+from frappe.utils import add_days, date_diff, getdate, now_datetime, strip_html
 
 from erpnext.setup.doctype.employee.employee import get_holiday_list_for_employee
 
@@ -103,9 +106,79 @@ def get_hr_settings() -> dict:
 	return frappe._dict(
 		allow_employee_checkin_from_mobile_app=settings.allow_employee_checkin_from_mobile_app,
 		allow_geolocation_tracking=settings.allow_geolocation_tracking,
+		require_photo_for_mobile_checkin=settings.require_photo_for_mobile_checkin,
 		prevent_self_leave_approval=settings.prevent_self_leave_approval,
 		enable_multi_currency_expense_claim=settings.enable_multi_currency_expense_claim,
 	)
+
+
+# Employee Checkin
+CHECKIN_PHOTO_TYPES = {"data:image/jpeg;base64,": "jpg", "data:image/png;base64,": "png"}
+CHECKIN_PHOTO_MAX_BYTES = 2 * 1024 * 1024
+
+
+@frappe.whitelist(methods=["POST"])
+def create_employee_checkin(
+	log_type: str,
+	photo: str | None = None,
+	latitude: float | None = None,
+	longitude: float | None = None,
+) -> dict:
+	"""Check the current employee in/out at server time, with an optional camera photo
+	(a data URL) saved as a private file attached to the checkin."""
+	if log_type not in ("IN", "OUT"):
+		frappe.throw(_("Invalid log type"))
+
+	employee = get_current_employee()
+	checkin = frappe.new_doc("Employee Checkin")
+	checkin.update(
+		{
+			"employee": employee,
+			"log_type": log_type,
+			"time": now_datetime(),
+			"latitude": latitude,
+			"longitude": longitude,
+		}
+	)
+
+	photo_file = save_checkin_photo(photo, employee) if photo else None
+	if photo_file:
+		checkin.checkin_photo = photo_file.file_url
+	checkin.insert()
+
+	if photo_file:
+		photo_file.db_set(
+			{
+				"attached_to_doctype": "Employee Checkin",
+				"attached_to_name": checkin.name,
+				"attached_to_field": "checkin_photo",
+			}
+		)
+
+	return {"name": checkin.name, "log_type": checkin.log_type, "time": checkin.time}
+
+
+def save_checkin_photo(photo: str, employee: str):
+	extension = next((ext for prefix, ext in CHECKIN_PHOTO_TYPES.items() if photo.startswith(prefix)), None)
+	if not extension:
+		frappe.throw(_("The photo must be a JPEG or PNG image."))
+
+	try:
+		content = base64.b64decode(photo.split(",", 1)[1], validate=True)
+	except (binascii.Error, ValueError):
+		frappe.throw(_("The photo could not be read. Please take it again."))
+
+	if len(content) > CHECKIN_PHOTO_MAX_BYTES:
+		frappe.throw(_("The photo is too large."))
+
+	return frappe.get_doc(
+		{
+			"doctype": "File",
+			"file_name": f"checkin-{employee}-{now_datetime():%Y%m%d-%H%M%S}.{extension}",
+			"content": content,
+			"is_private": 1,
+		}
+	).insert()
 
 
 # Notifications
