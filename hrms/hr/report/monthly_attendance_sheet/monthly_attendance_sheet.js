@@ -166,20 +166,35 @@ frappe.query_reports["Monthly Attendance Sheet"] = {
 
 		if (!summarized_view) {
 			if ((group_by && column.colIndex > 3) || (!group_by && column.colIndex > 2)) {
-				if (value == "HD/P") value = "<span style='color:#914EE3'>" + value + "</span>";
-				else if (value == "HD/A")
-					value = "<span style='color:orange'>" + value + "</span>";
-				else if (value == "P" || value == "WFH")
-					value = "<span style='color:green'>" + value + "</span>";
-				else if (value == "A") value = "<span style='color:red'>" + value + "</span>";
-				else if (value == "L") value = "<span style='color:#318AD8'>" + value + "</span>";
-				else value = "<span style='color:#878787'>" + value + "</span>";
+				value = format_day_cell(value);
 			}
 		}
 
 		return value;
 	},
 };
+// day cells: green present, yellow half day, pale red single punch, blue approved via request
+const DAY_CELL_STYLES = {
+	present: "background:#d3f9d8;color:#2b8a3e",
+	half_day: "background:#fff3bf;color:#a6740b",
+	single_punch: "background:#ffe3e3;color:#c92a2a",
+	approved: "background:#d0ebff;color:#1864ab",
+};
+
+function format_day_cell(value) {
+	const text = $("<div>").html(value).text().trim();
+	let style;
+	if (text.endsWith("✓")) style = DAY_CELL_STYLES.approved;
+	else if (text == "SP") style = DAY_CELL_STYLES.single_punch;
+	else if (text.startsWith("HD")) style = DAY_CELL_STYLES.half_day;
+	else if (text == "P" || text == "WFH") style = DAY_CELL_STYLES.present;
+	else if (text == "A") return "<span style='color:red'>" + value + "</span>";
+	else if (text == "L") return "<span style='color:#318AD8'>" + value + "</span>";
+	else return "<span style='color:#878787'>" + value + "</span>";
+
+	return `<span style="${style};display:block;text-align:center;border-radius:4px;font-weight:500">${value}</span>`;
+}
+
 function set_reqd_filter(fieldname, is_reqd) {
 	let filter = frappe.query_report.get_filter(fieldname);
 	filter.df.reqd = is_reqd;

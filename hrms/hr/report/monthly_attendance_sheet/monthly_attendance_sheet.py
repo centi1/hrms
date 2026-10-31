@@ -12,7 +12,7 @@ from pypika.terms import Criterion
 import frappe
 from frappe import _
 from frappe.query_builder import Case
-from frappe.query_builder.functions import Coalesce, Count, Extract, Sum
+from frappe.query_builder.functions import Coalesce, Count, Extract, Max, Min, Sum
 from frappe.utils import add_days, cint, cstr, formatdate, getdate
 from frappe.utils.nestedset import get_descendants_of
 
@@ -30,7 +30,12 @@ status_map = {
 	"On Leave": "L",
 	"Holiday": "H",
 	"Weekly Off": "WO",
+	"Single Punch": "SP",
+	"Approved via Attendance Request": "✓",
+	"Punched, not processed yet": "…",
 }
+# an Absent day whose check-ins all fall within this many minutes is shown as a single punch
+SINGLE_PUNCH_SPAN_MINUTES = 60
 
 day_abbr = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
@@ -88,6 +93,9 @@ def get_message() -> str:
 		"green",
 		"#3187D8",
 		"#878787",
+		"#878787",
+		"#ff8787",
+		"#339af0",
 		"#878787",
 	]
 
@@ -286,6 +294,9 @@ def get_attendance_map(filters: Filters) -> dict:
 	attendance_list = get_attendance_records(filters)
 	attendance_map = {}
 	leave_map = {}
+	# markers shown next to the status in the detailed view: {(employee, shift, date): "SP" | "✓"}
+	filters.attendance_markers = get_attendance_markers(attendance_list)
+	filters.attendance_markers.update(get_pending_punch_markers(filters))
 
 	for d in attendance_list:
 		if d.status == "On Leave":
@@ -313,6 +324,54 @@ def get_attendance_map(filters: Filters) -> dict:
 	return attendance_map
 
 
+def get_attendance_markers(attendance_list: list[dict]) -> dict:
+	"""Absent days with check-ins in a single punch window, and days set via an Attendance Request."""
+	markers = {}
+	absent = {d.name: d for d in attendance_list if d.status == "Absent"}
+	if absent:
+		Checkin = frappe.qb.DocType("Employee Checkin")
+		spans = (
+			frappe.qb.from_(Checkin)
+			.select(Checkin.attendance, Min(Checkin.time).as_("first"), Max(Checkin.time).as_("last"))
+			.where(Checkin.attendance.isin(list(absent)))
+			.groupby(Checkin.attendance)
+		).run(as_dict=True)
+		for span in spans:
+			if (span["last"] - span["first"]).total_seconds() <= SINGLE_PUNCH_SPAN_MINUTES * 60:
+				d = absent[span.attendance]
+				markers[(d.employee, d.shift or "", d.attendance_date)] = "SP"
+
+	for d in attendance_list:
+		if d.attendance_request:
+			markers[(d.employee, d.shift or "", d.attendance_date)] = "✓"
+	return markers
+
+
+def get_pending_punch_markers(filters: Filters) -> dict:
+	"""Days whose check-ins have no attendance yet (e.g. today, before the shift's punch window closes):
+	"SP" while all punches are in one window, "…" once the employee has punched in more than one."""
+	dates = get_dates_in_period(filters)
+	if not dates:
+		return {}
+	employee_condition = "and c.employee = %(employee)s" if filters.employee else ""
+	pending = frappe.db.sql(
+		f"""select c.employee, ifnull(c.shift, '') as shift, date(ifnull(c.shift_start, c.time)) as day,
+			min(c.time) as first, max(c.time) as last
+		from `tabEmployee Checkin` c join `tabEmployee` e on e.name = c.employee
+		where c.attendance is null and c.skip_auto_attendance = 0 and e.company in %(companies)s
+			and date(ifnull(c.shift_start, c.time)) between %(start)s and %(end)s {employee_condition}
+		group by c.employee, c.shift, day""",
+		{"companies": filters.companies, "start": getdate(dates[0]), "end": getdate(dates[-1]), "employee": filters.employee},
+		as_dict=True,
+	)
+	return {
+		(d.employee, d.shift, d.day): "SP"
+		if (d["last"] - d["first"]).total_seconds() <= SINGLE_PUNCH_SPAN_MINUTES * 60
+		else "…"
+		for d in pending
+	}
+
+
 def get_attendance_records(filters: Filters) -> list[dict]:
 	Attendance = frappe.qb.DocType("Attendance")
 	Employee = frappe.qb.DocType("Employee")
@@ -332,10 +391,12 @@ def get_attendance_records(filters: Filters) -> list[dict]:
 	query = (
 		frappe.qb.from_(Attendance)
 		.select(
+			Attendance.name,
 			Attendance.employee,
 			Attendance.attendance_date,
 			(status).as_("status"),
 			Attendance.shift,
+			Attendance.attendance_request,
 		)
 		.where(
 			(Attendance.docstatus == 1)
@@ -649,6 +710,11 @@ def get_attendance_status_for_detailed_view(
 				status = get_holiday_status(d, holidays)
 
 			abbr = status_map.get(status, "")
+			marker = (filters.attendance_markers or {}).get((employee, shift, d))
+			if marker in ("SP", "…") and status in (None, "Absent"):
+				abbr = marker
+			elif marker == "✓" and abbr:
+				abbr = f"{abbr}{marker}"
 			row[d.strftime("%d-%m-%Y")] = abbr
 
 		attendance_values.append(row)
