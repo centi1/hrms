@@ -348,28 +348,41 @@ def get_attendance_markers(attendance_list: list[dict]) -> dict:
 
 
 def get_pending_punch_markers(filters: Filters) -> dict:
-	"""Days whose check-ins have no attendance yet (e.g. today, before the shift's punch window closes):
-	"SP" while all punches are in one window, "…" once the employee has punched in more than one."""
+	"""Provisional status for days whose check-ins have no attendance yet (e.g. today, before the
+	shift's punch window closes), so the day's colour follows the punches as they come in:
+	one punch window so far -> "SP"; on a Punch Windows shift, the status the shift would mark
+	from the first and last punch so far ("P" / "HD"); otherwise "…"."""
 	dates = get_dates_in_period(filters)
 	if not dates:
 		return {}
 	employee_condition = "and c.employee = %(employee)s" if filters.employee else ""
-	pending = frappe.db.sql(
-		f"""select c.employee, ifnull(c.shift, '') as shift, date(ifnull(c.shift_start, c.time)) as day,
-			min(c.time) as first, max(c.time) as last
+	checkins = frappe.db.sql(
+		f"""select c.employee, ifnull(c.shift, '') as shift, c.shift_start, c.shift_end, c.time,
+			date(ifnull(c.shift_start, c.time)) as day
 		from `tabEmployee Checkin` c join `tabEmployee` e on e.name = c.employee
 		where c.attendance is null and c.skip_auto_attendance = 0 and e.company in %(companies)s
 			and date(ifnull(c.shift_start, c.time)) between %(start)s and %(end)s {employee_condition}
-		group by c.employee, c.shift, day""",
+		order by c.time""",
 		{"companies": filters.companies, "start": getdate(dates[0]), "end": getdate(dates[-1]), "employee": filters.employee},
 		as_dict=True,
 	)
-	return {
-		(d.employee, d.shift, d.day): "SP"
-		if (d["last"] - d["first"]).total_seconds() <= SINGLE_PUNCH_SPAN_MINUTES * 60
-		else "…"
-		for d in pending
-	}
+	days = {}
+	for c in checkins:
+		days.setdefault((c.employee, c.shift, c.day), []).append(c)
+
+	markers = {}
+	for key, logs in days.items():
+		first, last = logs[0].time, logs[-1].time
+		if (last - first).total_seconds() <= SINGLE_PUNCH_SPAN_MINUTES * 60:
+			markers[key] = "SP"
+			continue
+		shift = frappe.get_cached_doc("Shift Type", logs[0].shift) if logs[0].shift else None
+		if shift and shift.attendance_rule == "Punch Windows" and logs[0].shift_start:
+			status = shift.get_status_by_punch_windows(logs[0], first, last)
+			markers[key] = {"Present": "P", "Half Day": "HD"}.get(status, "…")
+		else:
+			markers[key] = "…"
+	return markers
 
 
 def get_attendance_records(filters: Filters) -> list[dict]:
@@ -711,7 +724,7 @@ def get_attendance_status_for_detailed_view(
 
 			abbr = status_map.get(status, "")
 			marker = (filters.attendance_markers or {}).get((employee, shift, d))
-			if marker in ("SP", "…") and status in (None, "Absent"):
+			if marker in ("SP", "P", "HD", "…") and status is None or (marker == "SP" and status == "Absent"):
 				abbr = marker
 			elif marker == "✓" and abbr:
 				abbr = f"{abbr}{marker}"
