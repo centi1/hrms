@@ -187,8 +187,9 @@ def get_timeline_data(doctype: str, name: str) -> dict:
 
 @frappe.whitelist()
 def get_attendance_heatmap(employee: str) -> dict:
-	"""Colour codes for the Employee attendance heatmap, matching the Monthly Attendance Sheet:
-	{"days": {"YYYY-MM-DD": "P" | "HD" | "SP" | "✓"}, "months": {"YYYY-MM": "present/working"}}.
+	"""Colour codes for the Employee attendance calendar, matching the Monthly Attendance Sheet:
+	{"days": {"YYYY-MM-DD": "P" | "HD" | "SP" | "✓" | "A" | "H"}, "months": {"YYYY-MM": "present/working"},
+	"start": first day shown, "end": today}.
 	Working days count from the employee's first attendance record (or joining) up to today."""
 	from hrms.hr.report.monthly_attendance_sheet.monthly_attendance_sheet import (
 		get_attendance_markers,
@@ -221,7 +222,7 @@ def get_attendance_heatmap(employee: str) -> dict:
 	)
 
 	days, status_by_date = {}, {}
-	codes = {"Present": "P", "Work From Home": "P", "Half Day": "HD"}
+	codes = {"Present": "P", "Work From Home": "P", "Half Day": "HD", "Absent": "A"}
 	for d in attendance:
 		marker = markers.get((d.employee, d.shift or "", d.attendance_date))
 		code = "✓" if marker == "✓" else marker if marker == "SP" else codes.get(d.status)
@@ -243,9 +244,10 @@ def get_attendance_heatmap(employee: str) -> dict:
 			status_by_date.setdefault(date, "Holiday" if date in holidays else None)
 			if date in holidays:
 				status_by_date[date] = "Holiday"
+				days.setdefault(str(date), "H")
 
 	months = {key.replace("month_", "").replace("_", "-"): value for key, value in get_month_summaries(status_by_date).items()}
-	return {"days": days, "months": months}
+	return {"days": days, "months": months, "start": str(start), "end": str(end)}
 
 
 @frappe.whitelist()
