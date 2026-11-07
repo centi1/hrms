@@ -100,6 +100,7 @@ class Interview(Document):
 				"label": _("Mark as {0}").format(job_applicant_status),
 				"server_action": "hrms.hr.doctype.interview.interview.update_job_applicant_status",
 				"args": {"job_applicant": self.job_applicant, "status": job_applicant_status},
+				"hide_on_success": True,  # close the box once the applicant is updated
 			},
 		)
 
