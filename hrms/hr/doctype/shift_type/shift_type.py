@@ -572,6 +572,11 @@ def update_last_sync_of_checkin():
 	current_datetime = frappe.flags.current_datetime or get_datetime()
 	for shift in shifts:
 		shift_end = get_actual_shift_end(shift, current_datetime)
+		if shift_end > current_datetime:
+			# today's cut-off is still ahead: the job did not run between yesterday's cut-off and
+			# today's shift start (server off overnight), so catch up with yesterday's cut-off
+			# instead of waiting for a run inside that window, which may never come
+			shift_end = add_days(shift_end, -1)
 		update_last_sync = None
 		if shift.last_sync_of_checkin:
 			if get_datetime(shift.last_sync_of_checkin) < shift_end < current_datetime:

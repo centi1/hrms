@@ -120,6 +120,29 @@ class TestShiftType(HRMSTestSuite):
 
 		self.assertEqual(shift_type.last_sync_of_checkin, datetime.combine(getdate(), get_time("23:31:00")))
 
+	def test_auto_update_last_sync_of_checkin_catches_up_after_a_missed_window(self):
+		# cut-off 22:30 (18:00 + 270 min). The job last ran two days ago and did not run between
+		# yesterday's cut-off and today's shift start (server off overnight): a run this morning
+		# must still advance to yesterday's cut-off instead of waiting for a run after today's.
+		shift_type = setup_shift_type(
+			shift_type="Test Evening Cutoff Shift", start_time="9:00:00", end_time="18:00:00"
+		)
+		shift_type.allow_check_out_after_shift_end_time = 270
+		shift_type.last_sync_of_checkin = datetime.combine(add_days(getdate(), -2), get_time("22:31:00"))
+		shift_type.auto_update_last_sync = 1
+		shift_type.save()
+
+		frappe.flags.current_datetime = datetime.combine(getdate(), get_time("11:00:00"))
+		update_last_sync_of_checkin()
+		shift_type.reload()
+		yesterday_cutoff = datetime.combine(add_days(getdate(), -1), get_time("22:31:00"))
+		self.assertEqual(shift_type.last_sync_of_checkin, yesterday_cutoff)
+
+		# already caught up: another run before today's cut-off changes nothing
+		update_last_sync_of_checkin()
+		shift_type.reload()
+		self.assertEqual(shift_type.last_sync_of_checkin, yesterday_cutoff)
+
 	def test_mark_attendance(self):
 		from hrms.hr.doctype.employee_checkin.test_employee_checkin import make_checkin
 
