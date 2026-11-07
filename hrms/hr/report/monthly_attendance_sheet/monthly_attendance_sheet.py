@@ -325,7 +325,11 @@ def get_attendance_map(filters: Filters) -> dict:
 	leave_map = {}
 	# markers shown next to the status in the detailed view: {(employee, shift, date): "SP" | "✓"}
 	filters.attendance_markers = get_attendance_markers(attendance_list)
-	filters.attendance_markers.update(get_pending_punch_markers(filters))
+	pending = get_pending_punch_markers(filters)
+	filters.attendance_markers.update(pending)
+	# employees who have only punched so far this period (e.g. on its first working day) still get a row
+	for employee, shift, _day in pending:
+		attendance_map.setdefault(employee, {}).setdefault(shift, {})
 
 	for d in attendance_list:
 		if d.status == "On Leave":
@@ -384,7 +388,15 @@ def get_pending_punch_markers(filters: Filters) -> dict:
 	dates = get_dates_in_period(filters)
 	if not dates:
 		return {}
-	employee_condition = "and c.employee = %(employee)s" if filters.employee else ""
+	conditions = []
+	if filters.employee:
+		conditions.append("c.employee = %(employee)s")
+	if filters.department and filters.department != "All Departments":
+		conditions.append("e.department = %(department)s")
+	for field in ("branch", "status", "employment_type"):
+		if filters.get(field):
+			conditions.append(f"e.{field} = %({field})s")
+	employee_condition = "".join(f" and {condition}" for condition in conditions)
 	checkins = frappe.db.sql(
 		f"""select c.employee, ifnull(c.shift, '') as shift, c.shift_start, c.shift_end, c.time,
 			date(ifnull(c.shift_start, c.time)) as day
@@ -392,7 +404,7 @@ def get_pending_punch_markers(filters: Filters) -> dict:
 		where c.attendance is null and c.skip_auto_attendance = 0 and e.company in %(companies)s
 			and date(ifnull(c.shift_start, c.time)) between %(start)s and %(end)s {employee_condition}
 		order by c.time""",
-		{"companies": filters.companies, "start": getdate(dates[0]), "end": getdate(dates[-1]), "employee": filters.employee},
+		{**filters, "start": getdate(dates[0]), "end": getdate(dates[-1])},
 		as_dict=True,
 	)
 	days = {}
