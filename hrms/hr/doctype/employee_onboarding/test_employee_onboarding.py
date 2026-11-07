@@ -15,6 +15,52 @@ from hrms.tests.utils import HRMSTestSuite
 
 
 class TestEmployeeOnboarding(HRMSTestSuite):
+	def test_details_come_from_the_job_offer(self):
+		# only the offer is given: company, designation, department, holiday list and dates follow
+		applicant = frappe.get_doc(
+			{
+				"doctype": "Job Applicant",
+				"applicant_name": "Offer Details Test",
+				"email_id": "offer_details@example.com",
+				"designation": "Engineer",
+				"status": "Accepted",
+			}
+		).insert(ignore_if_duplicate=True)
+		department = "_Test Onboarding Department - _TC"
+		if not frappe.db.exists("Department", department):
+			frappe.get_doc(
+				{
+					"doctype": "Department",
+					"department_name": "_Test Onboarding Department",
+					"company": "_Test Company",
+				}
+			).insert()
+		holiday_list = make_holiday_list("_Test Employee Boarding")
+		joining = add_days(getdate(), 7)
+		job_offer = create_job_offer(
+			job_applicant=applicant.name,
+			company="_Test Company",
+			designation="Engineer",
+			department=department,
+			holiday_list=holiday_list,
+			date_of_joining=joining,
+		)
+		job_offer.submit()
+
+		onboarding = frappe.new_doc("Employee Onboarding")
+		onboarding.job_offer = job_offer.name
+		onboarding.append(
+			"activities", {"activity_name": "Assign ID Card", "role": "HR User", "begin_on": 0, "duration": 1}
+		)
+		onboarding.insert()
+
+		self.assertEqual(onboarding.company, "_Test Company")
+		self.assertEqual(onboarding.designation, "Engineer")
+		self.assertEqual(onboarding.department, department)
+		self.assertEqual(onboarding.holiday_list, holiday_list)
+		self.assertEqual(getdate(onboarding.date_of_joining), joining)
+		self.assertEqual(getdate(onboarding.boarding_begins_on), joining)
+
 	def test_employee_onboarding_incomplete_task(self):
 		onboarding = create_employee_onboarding()
 

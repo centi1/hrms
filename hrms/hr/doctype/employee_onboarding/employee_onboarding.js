@@ -62,6 +62,38 @@ frappe.ui.form.on("Employee Onboarding", {
 		}
 	},
 
+	job_offer: function (frm) {
+		// the accepted offer is the source of truth for the new employee's details; the
+		// onboarding template only fills what the offer leaves blank
+		if (!frm.doc.job_offer) return;
+		frappe.db
+			.get_value("Job Offer", frm.doc.job_offer, [
+				"company",
+				"designation",
+				"department",
+				"grade",
+				"holiday_list",
+				"date_of_joining",
+			])
+			.then((r) => {
+				const offer = r.message || {};
+				const values = {
+					company: offer.company,
+					designation: offer.designation,
+					department: offer.department,
+					employee_grade: offer.grade,
+					holiday_list: offer.holiday_list,
+					date_of_joining: offer.date_of_joining,
+				};
+				if (offer.date_of_joining && !frm.doc.boarding_begins_on) {
+					values.boarding_begins_on = offer.date_of_joining;
+				}
+				Object.keys(values).forEach((field) => {
+					if (values[field]) frm.set_value(field, values[field]);
+				});
+			});
+	},
+
 	employee_onboarding_template: function (frm) {
 		frm.set_value("activities", "");
 		if (frm.doc.employee_onboarding_template) {

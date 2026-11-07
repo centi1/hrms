@@ -48,8 +48,35 @@ class EmployeeOnboarding(EmployeeBoardingController):
 
 	def validate(self):
 		super().validate()
+		self.set_details_from_job_offer()
 		self.set_employee()
 		self.validate_duplicate_employee_onboarding()
+
+	def set_details_from_job_offer(self):
+		"""The accepted offer carries the new employee's details; fill what was left blank so they
+		are not typed again (and typed differently) on the onboarding and the Employee record."""
+		if not self.job_offer:
+			return
+		offer = frappe.db.get_value(
+			"Job Offer",
+			self.job_offer,
+			["company", "designation", "department", "grade", "holiday_list", "date_of_joining"],
+			as_dict=True,
+		)
+		if not offer:
+			return
+		for field, value in (
+			("company", offer.company),
+			("designation", offer.designation),
+			("department", offer.department),
+			("employee_grade", offer.grade),
+			("holiday_list", offer.holiday_list),
+			("date_of_joining", offer.date_of_joining),
+		):
+			if value and not self.get(field):
+				self.set(field, value)
+		if self.date_of_joining and not self.boarding_begins_on:
+			self.boarding_begins_on = self.date_of_joining
 
 	def set_employee(self):
 		if not self.employee:
