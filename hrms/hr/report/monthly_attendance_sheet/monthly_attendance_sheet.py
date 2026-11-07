@@ -428,7 +428,12 @@ def get_pending_punch_markers(filters: Filters) -> dict:
 		where c.attendance is null and c.skip_auto_attendance = 0 and e.company in %(companies)s
 			and date(ifnull(c.shift_start, c.time)) between %(start)s and %(end)s {employee_condition}
 		order by c.time""",
-		{**filters, "start": getdate(dates[0]), "end": getdate(dates[-1])},
+		{  # only the values the query uses: filters also carries attendance_markers (a dict), which MariaDB rejects
+			"companies": filters.companies,
+			"start": getdate(dates[0]),
+			"end": getdate(dates[-1]),
+			**{field: filters.get(field) for field in ("employee", "department", "branch", "status", "employment_type")},
+		},
 		as_dict=True,
 	)
 	days = {}
