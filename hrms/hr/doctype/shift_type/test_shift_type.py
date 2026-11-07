@@ -330,6 +330,39 @@ class TestShiftType(HRMSTestSuite):
 			)
 			self.assertEqual((attendance.status, attendance.late_entry), (status, late), case)
 
+	def test_punch_windows_hit(self):
+		# a punch outside every window does not count: morning check-in + evening punch before the
+		# shift end = one window = single valid punch (shown "SP", still Absent for pay)
+		shift_type = setup_shift_type(
+			shift_type="Punch Windows Hit Test",
+			start_time="09:00:00",
+			end_time="20:00:00",
+			attendance_rule="Punch Windows",
+			morning_check_in_until="09:30:00",
+			half_day_window_start="13:00:00",
+			half_day_window_end="14:00:00",
+			status_for_other_punches="Absent",
+		)
+		date = getdate()
+		log = frappe._dict(
+			shift_start=datetime.combine(date, get_time("09:00:00")),
+			shift_end=datetime.combine(date, get_time("20:00:00")),
+		)
+		at = lambda t: datetime.combine(date, get_time(t))  # noqa: E731
+		cases = {
+			("09:00", "20:05"): {"morning", "end"},
+			("09:00", "18:33"): {"morning"},
+			("09:05", "19:17"): {"morning"},
+			("09:00", "13:30"): {"morning", "mid_day"},
+			("13:20", "20:01"): {"mid_day", "end"},
+			("10:30", "18:40"): set(),
+			("19:00", "19:00"): set(),
+			("09:00", None): {"morning"},
+		}
+		for (first, last), expected in cases.items():
+			hit = shift_type.get_punch_windows_hit(log, at(first), at(last) if last else None)
+			self.assertEqual(hit, expected, (first, last))
+
 	def test_working_hours_threshold_for_absent(self):
 		from hrms.hr.doctype.employee_checkin.test_employee_checkin import make_checkin
 

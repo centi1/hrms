@@ -357,21 +357,45 @@ def get_attendance_map(filters: Filters) -> dict:
 	return attendance_map
 
 
+def is_single_punch_day(shift: str | None, shift_start, shift_end, first, last) -> bool:
+	"""A day with only one valid punch: all punches within SINGLE_PUNCH_SPAN_MINUTES, or, on a
+	Punch Windows shift, punches in only one of the shift's windows. A morning check-in with an
+	evening punch before the shift end is such a day: the evening punch does not count as the
+	check-out, so the day is shown as "SP" (pale red) rather than plain Absent; it is still a
+	non-pay day unless an Attendance Request is approved."""
+	if (last - first).total_seconds() <= SINGLE_PUNCH_SPAN_MINUTES * 60:
+		return True
+	if not (shift and shift_start and shift_end):
+		return False
+	shift_type = frappe.get_cached_doc("Shift Type", shift)
+	if shift_type.attendance_rule != "Punch Windows":
+		return False
+	log = frappe._dict(shift_start=shift_start, shift_end=shift_end)
+	return len(shift_type.get_punch_windows_hit(log, first, last)) == 1
+
+
 def get_attendance_markers(attendance_list: list[dict]) -> dict:
-	"""Absent days with check-ins in a single punch window, and days set via an Attendance Request."""
+	"""Absent days with a single valid punch (see is_single_punch_day), and days set via an
+	Attendance Request."""
 	markers = {}
 	absent = {d.name: d for d in attendance_list if d.status == "Absent"}
 	if absent:
 		Checkin = frappe.qb.DocType("Employee Checkin")
 		spans = (
 			frappe.qb.from_(Checkin)
-			.select(Checkin.attendance, Min(Checkin.time).as_("first"), Max(Checkin.time).as_("last"))
+			.select(
+				Checkin.attendance,
+				Min(Checkin.time).as_("first"),
+				Max(Checkin.time).as_("last"),
+				Min(Checkin.shift_start).as_("shift_start"),
+				Min(Checkin.shift_end).as_("shift_end"),
+			)
 			.where(Checkin.attendance.isin(list(absent)))
 			.groupby(Checkin.attendance)
 		).run(as_dict=True)
 		for span in spans:
-			if (span["last"] - span["first"]).total_seconds() <= SINGLE_PUNCH_SPAN_MINUTES * 60:
-				d = absent[span.attendance]
+			d = absent[span.attendance]
+			if is_single_punch_day(d.shift, span.shift_start, span.shift_end, span.first, span.last):
 				markers[(d.employee, d.shift or "", d.attendance_date)] = "SP"
 
 	for d in attendance_list:
@@ -414,7 +438,7 @@ def get_pending_punch_markers(filters: Filters) -> dict:
 	markers = {}
 	for key, logs in days.items():
 		first, last = logs[0].time, logs[-1].time
-		if (last - first).total_seconds() <= SINGLE_PUNCH_SPAN_MINUTES * 60:
+		if is_single_punch_day(logs[0].shift, logs[0].shift_start, logs[0].shift_end, first, last):
 			markers[key] = "SP"
 			continue
 		shift = frappe.get_cached_doc("Shift Type", logs[0].shift) if logs[0].shift else None

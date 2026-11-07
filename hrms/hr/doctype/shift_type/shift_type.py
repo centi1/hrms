@@ -378,6 +378,22 @@ class ShiftType(Document):
 		window_end = datetime.combine(shift_date, get_time(self.half_day_window_end))
 		return window_start <= time <= window_end
 
+	def get_punch_windows_hit(self, log, in_time: datetime | None, out_time: datetime | None) -> set[str]:
+		"""Which of the shift's punch windows the day's first (in_time) and last (out_time) punches
+		fall in: "morning", "mid_day", "end". A punch outside every window does not count, so a
+		morning check-in plus an evening punch before the shift end is a single valid punch (one
+		window), not two."""
+		morning_until = datetime.combine(log.shift_start.date(), get_time(self.morning_check_in_until))
+		full_day_out = log.shift_end - timedelta(minutes=cint(self.early_exit_grace_period))
+		hit = set()
+		if in_time and in_time <= morning_until:
+			hit.add("morning")
+		if self.is_in_mid_day_window(log, in_time) or self.is_in_mid_day_window(log, out_time):
+			hit.add("mid_day")
+		if out_time and out_time >= full_day_out:
+			hit.add("end")
+		return hit
+
 	def mark_absent_for_dates_with_no_attendance(self, employee: str):
 		"""Marks Absents for the given employee on working days in this shift that have no attendance marked.
 		The Absent status is marked starting from 'process_attendance_after' or employee creation date.
