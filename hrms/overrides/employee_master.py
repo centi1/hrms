@@ -6,7 +6,7 @@ from frappe import _
 from frappe.model.naming import set_name_by_naming_series
 from frappe.query_builder import Interval
 from frappe.query_builder.functions import Count, CurDate, UnixTimestamp
-from frappe.utils import add_years, cint, get_link_to_form, getdate
+from frappe.utils import add_days, add_years, cint, get_link_to_form, getdate
 
 from erpnext.setup.doctype.employee.employee import Employee
 
@@ -189,7 +189,7 @@ def get_timeline_data(doctype: str, name: str) -> dict:
 def get_attendance_heatmap(employee: str) -> dict:
 	"""Colour codes for the Employee attendance calendar, matching the Monthly Attendance Sheet:
 	{"days": {"YYYY-MM-DD": "P" | "HD" | "SP" | "✓" | "A" | "H"}, "months": {"YYYY-MM": "present/working"},
-	"start": first day shown, "end": today}.
+	"punches": first and last punch of each day (see get_day_punches), "start": first day shown, "end": today}.
 	Working days count from the employee's first attendance record (or joining) up to today."""
 	from hrms.hr.report.monthly_attendance_sheet.monthly_attendance_sheet import (
 		get_attendance_markers,
@@ -247,7 +247,57 @@ def get_attendance_heatmap(employee: str) -> dict:
 				days.setdefault(str(date), "H")
 
 	months = {key.replace("month_", "").replace("_", "-"): value for key, value in get_month_summaries(status_by_date).items()}
-	return {"days": days, "months": months, "start": str(start), "end": str(end)}
+	return {
+		"days": days,
+		"months": months,
+		"punches": get_day_punches(employee, start, end),
+		"start": str(start),
+		"end": str(end),
+	}
+
+
+def get_day_punches(employee: str, start, end) -> dict[str, dict]:
+	"""The first and the last punch of each day, for the day details of the attendance calendar:
+	{"YYYY-MM-DD": {"first": "HH:MM:SS", "last": "HH:MM:SS", "count": n, "first_counted": bool,
+	"last_counted": bool}}. A day with one punch, or with all its punches within the report's
+	SINGLE_PUNCH_SPAN_MINUTES (a repeated punch), has no "last". On a shift that decides attendance by
+	punch windows, "first_counted" / "last_counted" tell whether that punch fell in a window (morning
+	or mid-day for the first, mid-day or shift end for the last); other shifts leave them out.
+	A punch belongs to the day its shift starts on, so a night shift's check-out stays with its check-in."""
+	from hrms.hr.report.monthly_attendance_sheet.monthly_attendance_sheet import SINGLE_PUNCH_SPAN_MINUTES
+
+	logs = frappe.get_all(
+		"Employee Checkin",
+		filters=[
+			["employee", "=", employee],
+			["time", ">=", getdate(start)],
+			["time", "<", add_days(getdate(end), 2)],
+		],
+		fields=["time", "shift", "shift_start", "shift_end"],
+		order_by="time",
+	)
+	logs_by_day = {}
+	for log in logs:
+		day = getdate(log.shift_start or log.time)
+		if getdate(start) <= day <= getdate(end):
+			logs_by_day.setdefault(str(day), []).append(log)
+
+	punches = {}
+	for day, day_logs in logs_by_day.items():
+		first, last = day_logs[0], day_logs[-1]
+		single = (last.time - first.time).total_seconds() <= SINGLE_PUNCH_SPAN_MINUTES * 60
+		entry = {"first": first.time.strftime("%H:%M:%S"), "count": len(day_logs)}
+		if not single:
+			entry["last"] = last.time.strftime("%H:%M:%S")
+
+		shift = frappe.get_cached_doc("Shift Type", first.shift) if first.shift else None
+		if shift and shift.attendance_rule == "Punch Windows" and first.shift_start and first.shift_end:
+			entry["first_counted"] = bool(shift.get_punch_windows_hit(first, first.time, None) & {"morning", "mid_day"})
+			if not single:
+				entry["last_counted"] = bool(shift.get_punch_windows_hit(first, None, last.time) & {"mid_day", "end"})
+		punches[day] = entry
+
+	return punches
 
 
 @frappe.whitelist()

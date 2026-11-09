@@ -363,6 +363,52 @@ class TestShiftType(HRMSTestSuite):
 			hit = shift_type.get_punch_windows_hit(log, at(first), at(last) if last else None)
 			self.assertEqual(hit, expected, (first, last))
 
+	def test_day_punches_for_the_attendance_calendar(self):
+		# the Employee attendance calendar shows a day's first and last punch, and whether each one
+		# fell in a punch window (counted) or not
+		from hrms.hr.doctype.employee_checkin.test_employee_checkin import make_checkin
+		from hrms.overrides.employee_master import get_day_punches
+
+		shift_type = setup_shift_type(
+			shift_type="Calendar Punches Test",
+			start_time="09:00:00",
+			end_time="18:30:00",
+			attendance_rule="Punch Windows",
+			morning_check_in_until="09:10:59",
+			half_day_window_start="13:00:00",
+			half_day_window_end="14:00:00",
+			status_for_other_punches="Absent",
+		)
+		employee = make_employee(
+			"calendar_punches@example.com", company="_Test Company", default_shift=shift_type.name
+		)
+		punches_by_days_ago = {
+			4: ["09:05:00", "13:20:00", "18:40:00"],  # full day: the mid-day punch is neither first nor last
+			3: ["09:19:00", "18:35:00"],  # morning punch after the cut-off does not count
+			2: ["13:07:00", "13:16:00"],  # punched twice within the hour: a single punch
+			1: ["09:10:30", "13:30:00"],  # first half: inside the minute 09:10 still counts
+		}
+		for days_ago, times in punches_by_days_ago.items():
+			for time in times:
+				make_checkin(employee, datetime.combine(add_days(getdate(), -days_ago), get_time(time)))
+
+		punches = get_day_punches(employee, add_days(getdate(), -4), getdate())
+		day = lambda days_ago: str(add_days(getdate(), -days_ago))  # noqa: E731
+		self.assertEqual(
+			punches[day(4)],
+			{"first": "09:05:00", "last": "18:40:00", "count": 3, "first_counted": True, "last_counted": True},
+		)
+		self.assertEqual(
+			punches[day(3)],
+			{"first": "09:19:00", "last": "18:35:00", "count": 2, "first_counted": False, "last_counted": True},
+		)
+		self.assertEqual(punches[day(2)], {"first": "13:07:00", "count": 2, "first_counted": True})
+		self.assertEqual(
+			punches[day(1)],
+			{"first": "09:10:30", "last": "13:30:00", "count": 2, "first_counted": True, "last_counted": True},
+		)
+		self.assertNotIn(day(0), punches)
+
 	def test_working_hours_threshold_for_absent(self):
 		from hrms.hr.doctype.employee_checkin.test_employee_checkin import make_checkin
 
