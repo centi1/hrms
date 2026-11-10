@@ -576,16 +576,15 @@ def get_department_approvers(department: str, parentfield: str) -> list[str]:
 
 
 @frappe.whitelist()
-def get_leave_types(employee: str, date: str) -> list:
-	from hrms.hr.doctype.leave_application.leave_application import get_leave_details
+def get_leave_types(employee: str, date: str, leave_application: str | None = None) -> list[dict]:
+	"""The leave types `employee` may apply for on `date`, each with the balance left of it
+	(see get_leave_type_balances). The mobile app shows the balance next to the type and refuses an
+	exhausted one; `leave_application` is the open application being edited, whose own days are not
+	counted against it."""
+	from hrms.hr.doctype.leave_application.leave_application import get_leave_type_balances
 
-	date = date or getdate()
-
-	# Get leave details validate leave access internally
-	leave_details = get_leave_details(employee, date)
-	leave_types = list(leave_details["leave_allocation"].keys()) + leave_details["lwps"]
-
-	return leave_types
+	# get_leave_details validates leave access internally
+	return get_leave_type_balances(employee, date or getdate(), leave_application)
 
 
 # Expense Claims

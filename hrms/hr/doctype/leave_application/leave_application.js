@@ -14,8 +14,15 @@ frappe.ui.form.on("Leave Application", {
 		});
 		frm.set_query("employee", erpnext.queries.employee);
 		frm.set_query("leave_type", function () {
+			// the types the employee may apply for, each with its balance as the description
+			const filters = {
+				employee: frm.doc.employee,
+				date: frm.doc.from_date || frm.doc.posting_date,
+			};
+			if (!frm.is_new()) filters.leave_application = frm.doc.name;
 			return {
-				filters: [["leave_type_name", "in", frm.allowed_leave_types || []]],
+				query: "hrms.hr.doctype.leave_application.leave_application.leave_type_query",
+				filters: filters,
 			};
 		});
 	},
@@ -85,11 +92,50 @@ frappe.ui.form.on("Leave Application", {
 
 			// lwps should be allowed for selection as they don't have any allocation
 			frm.allowed_leave_types = Object.keys(leave_details).concat(lwps);
+			frm.trigger("get_leave_type_balances");
 		}
+	},
+
+	// what is left of each leave type, so an exhausted type is greyed out in the list and refused
+	get_leave_type_balances: function (frm) {
+		frm.leave_type_balances = {};
+		if (!frm.doc.employee) return;
+		return frappe.call({
+			method: "hrms.hr.doctype.leave_application.leave_application.get_leave_type_balances",
+			args: {
+				employee: frm.doc.employee,
+				date: frm.doc.from_date || frm.doc.posting_date,
+				leave_application: frm.is_new() ? null : frm.doc.name,
+			},
+			callback: function (r) {
+				frm.leave_type_balances = {};
+				(r.message || []).forEach((row) => (frm.leave_type_balances[row.leave_type] = row));
+			},
+		});
+	},
+
+	grey_out_exhausted_leave_types: function (frm) {
+		const control = frm.get_field("leave_type");
+		if (!control || !control.$input || control.exhausted_hook) return;
+		control.exhausted_hook = true;
+		control.$input.on("awesomplete-open", () => {
+			$(control.awesomplete.ul)
+				.children()
+				.each((_, el) => {
+					const item = $(el).data("item.autocomplete");
+					const balance = item && frm.leave_type_balances && frm.leave_type_balances[item.value];
+					if (balance && balance.exhausted) {
+						$(el)
+							.css({ opacity: 0.45, "pointer-events": "none" })
+							.attr("title", __("No balance left"));
+					}
+				});
+		});
 	},
 
 	refresh: function (frm) {
 		hrms.leave_utils.add_view_ledger_button(frm);
+		frm.trigger("grey_out_exhausted_leave_types");
 		if (frm.is_new()) {
 			frm.trigger("calculate_total_days");
 		}
@@ -137,6 +183,17 @@ frappe.ui.form.on("Leave Application", {
 	},
 
 	leave_type: function (frm) {
+		const balance = frm.leave_type_balances && frm.leave_type_balances[frm.doc.leave_type];
+		if (frm.doc.docstatus === 0 && balance && balance.exhausted) {
+			const leave_type = frm.doc.leave_type;
+			frm.set_value("leave_type", "");
+			frappe.msgprint({
+				title: __("No balance left"),
+				indicator: "orange",
+				message: __("{0}: no leave is left to apply for.", [leave_type.bold()]),
+			});
+			return;
+		}
 		frm.trigger("get_leave_balance");
 	},
 

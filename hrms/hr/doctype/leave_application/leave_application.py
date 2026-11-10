@@ -1024,6 +1024,78 @@ def get_leave_details(
 	}
 
 
+
+def get_leave_type_balances(
+	employee: str, date: str | datetime.date, leave_application: str | None = None
+) -> list[dict]:
+	"""Every leave type `employee` may apply for on `date` and how much of it is left:
+	[{"leave_type", "remaining", "exhausted", "description"}]. Remaining is the balance of the
+	allocation minus the days of applications still waiting for approval, so a second application
+	for the last day is refused before an approver sees it. The days of `leave_application` itself
+	(an open application being edited) are not held against it. Leave without pay has no balance
+	(remaining None, never exhausted). The forms show the description next to each type and refuse
+	an exhausted one."""
+	details = get_leave_details(employee, date, leave_application=leave_application)
+	precision = cint(frappe.db.get_single_value("System Settings", "float_precision")) or 2
+	own = None
+	if leave_application:
+		own = frappe.db.get_value(
+			"Leave Application",
+			leave_application,
+			["leave_type", "total_leave_days", "status", "docstatus"],
+			as_dict=True,
+		)
+		if not own or own.docstatus != 0 or own.status != "Open":
+			own = None
+
+	def days(n):
+		return "%g" % flt(n, precision)
+
+	rows = []
+	for leave_type, d in details["leave_allocation"].items():
+		remaining = flt(d["remaining_leaves"] - d["leaves_pending_approval"], precision)
+		if own and own.leave_type == leave_type:
+			remaining = flt(remaining + flt(own.total_leave_days), precision)
+		remaining = max(remaining, 0)
+		exhausted = remaining <= 0
+		rows.append(
+			{
+				"leave_type": leave_type,
+				"remaining": remaining,
+				"exhausted": exhausted,
+				"description": _("No balance left")
+				if exhausted
+				else _("{0} of {1} left").format(days(remaining), days(d["total_leaves"])),
+			}
+		)
+	for leave_type in details["lwps"]:
+		rows.append(
+			{
+				"leave_type": leave_type,
+				"remaining": None,
+				"exhausted": False,
+				"description": _("Leave Without Pay"),
+			}
+		)
+	return rows
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def leave_type_query(
+	doctype: str, txt: str, searchfield: str, start: int, page_len: int, filters: dict | None = None
+) -> list[tuple[str, str]]:
+	"""Link search for Leave Application.leave_type: the types the employee may apply for, each with
+	its balance as the description, so an exhausted type shows as such before it is picked."""
+	filters = filters or {}
+	if not filters.get("employee"):
+		return []
+	rows = get_leave_type_balances(
+		filters["employee"], filters.get("date") or nowdate(), filters.get("leave_application")
+	)
+	txt = (txt or "").lower()
+	return [(r["leave_type"], r["description"]) for r in rows if txt in r["leave_type"].lower()]
+
 @frappe.whitelist()
 def get_leave_balance_on(
 	employee: str,

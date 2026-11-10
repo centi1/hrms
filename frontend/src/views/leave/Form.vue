@@ -18,7 +18,7 @@
 
 <script setup>
 import { IonPage, IonContent } from "@ionic/vue"
-import { createResource } from "frappe-ui"
+import { createResource, toast } from "frappe-ui"
 import { ref, watch, inject, nextTick } from "vue"
 
 import FormView from "@/components/FormView.vue"
@@ -87,11 +87,16 @@ const leaveApprovalDetails = createResource({
 	},
 })
 
+// leave types whose balance is used up (or held by applications waiting for approval): shown
+// with "No balance left" in the list and refused when picked
+let exhaustedLeaveTypes = new Set()
+
 const leaveTypes = createResource({
 	url: "hrms.api.get_leave_types",
 	params: {
 		employee: currEmployee.value,
 		date: today,
+		leave_application: props.id,
 	},
 	onSuccess(data) {
 		setLeaveTypes(data)
@@ -107,13 +112,26 @@ watch(
 			setFormReadOnly()
 		}
 		currEmployee.value = employee_id
-		leaveTypes.fetch({ employee: currEmployee.value, date: today })
+		leaveTypes.fetch({ employee: currEmployee.value, date: today, leave_application: props.id })
 		leaveApprovalDetails.fetch({ employee: currEmployee.value })		
 	}
 )
 watch(
 	() => leaveApplication.value.leave_type,
-	(leave_type) => setLeaveBalance(leave_type)
+	(leave_type) => {
+		if (leave_type && isFormInitialized.value && exhaustedLeaveTypes.has(leave_type)) {
+			toast({
+				title: __("No balance left"),
+				text: __("{0}: no leave is left to apply for.", [leave_type]),
+				icon: "alert-circle",
+				position: "bottom-center",
+				iconClasses: "text-orange-500",
+			})
+			leaveApplication.value.leave_type = null
+			return
+		}
+		setLeaveBalance(leave_type)
+	}
 )
 
 watch(
@@ -143,6 +161,7 @@ watch(
 		leaveTypes.fetch({
 			employee: currEmployee.value,
 			date: from_date,
+			leave_application: props.id,
 		})
 	}
 )
@@ -295,9 +314,13 @@ function setLeaveTypes(data) {
 	const leave_type = formFields.data.find(
 		(field) => field.fieldname === "leave_type"
 	)
-	leave_type.documentList = data?.map((leave_type) => ({
-		label: leave_type,
-		value: leave_type,
+	exhaustedLeaveTypes = new Set(
+		(data || []).filter((row) => row.exhausted).map((row) => row.leave_type)
+	)
+	leave_type.documentList = data?.map((row) => ({
+		label: row.leave_type,
+		value: row.leave_type,
+		description: row.description,
 	}))
 }
 

@@ -1049,6 +1049,68 @@ class TestLeaveApplication(HRMSTestSuite):
 		self.assertEqual(leave_allocation["remaining_leaves"], 26)
 
 	@assign_holiday_list("Salary Slip Test Holiday List", "_Test Company")
+	def test_get_leave_type_balances_marks_an_exhausted_type(self):
+		# a one-day allocation (Casual Leave at Athen): the type is offered with "1 of 1 left",
+		# an application waiting for approval already exhausts it, except for that application itself
+		from hrms.hr.doctype.leave_application.leave_application import (
+			get_leave_type_balances,
+			leave_type_query,
+		)
+
+		employee = get_employee()
+		date = getdate()
+		year_start, year_end = getdate(get_year_start(date)), getdate(get_year_ending(date))
+		create_leave_type(leave_type_name="_Test One Day Leave", max_leaves_allowed=1)
+		make_allocation_record(
+			employee=employee.name,
+			leave_type="_Test One Day Leave",
+			from_date=year_start,
+			to_date=year_end,
+			leaves=1,
+		)
+
+		def balance(leave_application=None):
+			rows = get_leave_type_balances(employee.name, year_start, leave_application)
+			return next(r for r in rows if r["leave_type"] == "_Test One Day Leave")
+
+		row = balance()
+		self.assertEqual((row["remaining"], row["exhausted"], row["description"]), (1, False, "1 of 1 left"))
+		self.assertIn(
+			("_Test One Day Leave", "1 of 1 left"),
+			leave_type_query("Leave Type", "one day", "name", 0, 20, {"employee": employee.name, "date": year_start}),
+		)
+		self.assertNotIn("_Test One Day Leave", [r["leave_type"] for r in get_leave_type_balances(employee.name, add_days(year_start, -1))])
+
+		first_sunday = get_first_sunday(self.holiday_list)
+		application = make_leave_application(
+			employee.name,
+			add_days(first_sunday, 1),
+			add_days(first_sunday, 1),
+			"_Test One Day Leave",
+			submit=False,
+		)
+		application.status = "Open"
+		application.save()
+
+		row = balance()
+		self.assertEqual((row["remaining"], row["exhausted"], row["description"]), (0, True, "No balance left"))
+		# the open application being edited keeps its own day
+		self.assertFalse(balance(application.name)["exhausted"])
+
+		application.reload()
+		application.status = "Approved"
+		application.submit()
+		self.assertTrue(balance()["exhausted"])
+		self.assertTrue(balance(application.name)["exhausted"])
+
+		# leave without pay needs no allocation and is never exhausted
+		create_leave_type(leave_type_name="_Test One Day LWP", is_lwp=1)
+		lwp = next(
+			r for r in get_leave_type_balances(employee.name, year_start) if r["leave_type"] == "_Test One Day LWP"
+		)
+		self.assertEqual((lwp["remaining"], lwp["exhausted"]), (None, False))
+
+	@assign_holiday_list("Salary Slip Test Holiday List", "_Test Company")
 	def test_half_day_date_cannot_be_holiday(self):
 		employee = get_employee()
 		date = getdate()
