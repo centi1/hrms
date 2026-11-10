@@ -356,17 +356,14 @@ class ShiftType(Document):
 		"""Present: morning check-in and check-out at the shift end.
 		Half Day: morning check-in and mid-day check-out (first half), or mid-day check-in
 		and check-out at the shift end (second half)."""
-		morning_until = datetime.combine(log.shift_start.date(), get_time(self.morning_check_in_until))
-		full_day_out = log.shift_end - timedelta(minutes=cint(self.early_exit_grace_period))
+		return self.get_status_by_windows_hit(self.get_punch_windows_hit(log, in_time, out_time))
 
-		morning_in = bool(in_time) and in_time <= morning_until
-		mid_day_in = self.is_in_mid_day_window(log, in_time)
-		end_out = bool(out_time) and out_time >= full_day_out
-		mid_day_out = self.is_in_mid_day_window(log, out_time)
-
-		if morning_in and end_out:
+	def get_status_by_windows_hit(self, hit: set[str]) -> str:
+		"""The status for a set of punch windows hit (see get_punch_windows_hit); also used to tell
+		what a day becomes when a missed punch is regularised through an Attendance Request."""
+		if {"morning", "end"} <= hit:
 			return "Present"
-		if (morning_in and mid_day_out) or (mid_day_in and end_out):
+		if "mid_day" in hit and hit & {"morning", "end"}:
 			return "Half Day"
 		return self.status_for_other_punches or "Half Day"
 

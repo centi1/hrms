@@ -22,6 +22,7 @@
   "shift",
   "reason_section",
   "reason",
+  "missed_punch",
   "column_break_4",
   "explanation",
   "amended_from"
@@ -75,16 +76,18 @@
    "fieldtype": "Date",
    "in_list_view": 1,
    "label": "To Date",
-   "reqd": 1
+   "reqd": 1,
+   "depends_on": "eval:doc.reason != \"Missed Punch\""
   },
   {
    "default": "0",
    "fieldname": "half_day",
    "fieldtype": "Check",
-   "label": "Half Day"
+   "label": "Half Day",
+   "depends_on": "eval:doc.reason != \"Missed Punch\""
   },
   {
-   "depends_on": "half_day",
+   "depends_on": "eval:doc.half_day && doc.reason != \"Missed Punch\"",
    "fieldname": "half_day_date",
    "fieldtype": "Date",
    "label": "Half Day Date",
@@ -100,8 +103,17 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Reason",
-   "options": "Work From Home\nOn Duty",
+   "options": "Work From Home\nOn Duty\nMissed Punch",
    "reqd": 1
+  },
+  {
+   "depends_on": "eval:doc.reason == \"Missed Punch\"",
+   "description": "One date at a time; only the punches missing on that date are offered, with what the day becomes",
+   "fieldname": "missed_punch",
+   "fieldtype": "Select",
+   "label": "Missed Punch",
+   "mandatory_depends_on": "eval:doc.reason == \"Missed Punch\"",
+   "options": "\nMorning punch\nLunch-time punch\nEvening punch"
   },
   {
    "fieldname": "column_break_4",

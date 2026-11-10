@@ -3,6 +3,7 @@
 frappe.ui.form.on("Attendance Request", {
 	refresh(frm) {
 		frm.trigger("show_attendance_warnings");
+		frm.trigger("set_missed_punch_options");
 	},
 
 	show_attendance_warnings(frm) {
@@ -33,12 +34,53 @@ frappe.ui.form.on("Attendance Request", {
 		if (frm.doc.employee && frm.doc.from_date && !frm.doc.shift) {
 			frm.trigger("set_employee_shift");
 		}
+		frm.trigger("set_missed_punch_options");
 	},
 
 	from_date(frm) {
 		if (frm.doc.employee && frm.doc.from_date && !frm.doc.shift) {
 			frm.trigger("set_employee_shift");
 		}
+		frm.trigger("set_missed_punch_options");
+	},
+
+	reason(frm) {
+		frm.trigger("set_missed_punch_options");
+	},
+
+	// Missed Punch: one date, and only the punches missing on it are offered, with what the day becomes
+	set_missed_punch_options(frm) {
+		if (frm.doc.reason !== "Missed Punch" || frm.doc.docstatus !== 0) return;
+		if (frm.doc.to_date !== frm.doc.from_date) frm.set_value("to_date", frm.doc.from_date);
+		if (!frm.doc.employee || !frm.doc.from_date) return;
+
+		frappe.call({
+			method: "hrms.hr.doctype.attendance_request.attendance_request.get_missed_punch_options",
+			args: { employee: frm.doc.employee, date: frm.doc.from_date, shift: frm.doc.shift },
+			callback(r) {
+				const details = r.message || {};
+				const options = [{ label: "", value: "" }].concat(
+					(details.options || []).map((o) => ({ label: o.label, value: o.value })),
+				);
+				frm.set_df_property("missed_punch", "options", options);
+				if (frm.doc.missed_punch && !options.some((o) => o.value === frm.doc.missed_punch)) {
+					frm.set_value("missed_punch", "");
+				}
+				const punches = details.punches
+					? __("Punches on {0}: {1}", [frappe.datetime.str_to_user(frm.doc.from_date), details.punches])
+					: "";
+				if (details.eligible) {
+					frm.set_df_property("missed_punch", "description", punches);
+					frm.dashboard.clear_headline();
+				} else {
+					frm.set_df_property("missed_punch", "description", "");
+					frm.dashboard.set_headline(
+						[details.message, punches].filter(Boolean).join(" "),
+						"orange",
+					);
+				}
+			},
+		});
 	},
 
 	set_employee_shift(frm) {

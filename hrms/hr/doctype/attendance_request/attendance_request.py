@@ -2,15 +2,35 @@
 # For license information, please see license.txt
 
 
+from datetime import datetime, timedelta
+
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import add_days, comma_or, date_diff, format_date, get_link_to_form, getdate
+from frappe.utils import (
+	add_days,
+	cint,
+	comma_or,
+	date_diff,
+	format_date,
+	format_time,
+	get_link_to_form,
+	get_time,
+	getdate,
+)
 
 from erpnext.setup.doctype.employee.employee import is_holiday
 
 import hrms
+from hrms.hr.doctype.shift_assignment.shift_assignment import has_overlapping_timings
 from hrms.hr.utils import validate_active_employee, validate_dates
+
+# Missed Punch request: the option an employee picks -> the punch window of Shift Type.get_punch_windows_hit
+MISSED_PUNCH_WINDOWS = {
+	"Morning punch": "morning",
+	"Lunch-time punch": "mid_day",
+	"Evening punch": "end",
+}
 
 
 class OverlappingAttendanceRequestError(frappe.ValidationError):
@@ -43,11 +63,53 @@ class AttendanceRequest(Document):
 
 	def validate(self):
 		validate_active_employee(self.employee)
+		self.validate_missed_punch()
 		validate_dates(self, self.from_date, self.to_date, False)
 		self.validate_shifts()
 		self.validate_half_day()
 		self.validate_request_overlap()
 		self.validate_no_attendance_to_create()
+
+	def validate_missed_punch(self):
+		"""A Missed Punch request is for one date on which the employee did punch, for one of the
+		punches missing that day (see get_missed_punch_details); the day's attendance becomes what
+		that punch would have made it, so there is no half-day choice."""
+		if self.reason != "Missed Punch":
+			return
+		self.to_date = self.from_date
+		self.half_day = 0
+		self.half_day_date = None
+		self.include_holidays = 0
+		if not self.from_date:
+			return
+		details = get_missed_punch_details(self.employee, self.from_date, self.shift)
+		if not details.eligible:
+			frappe.throw(details.message, title=_("Missed Punch"))
+		if not self.missed_punch:
+			frappe.throw(
+				_("Choose which punch was missed on {0}.").format(frappe.bold(format_date(self.from_date))),
+				title=_("Missed Punch"),
+			)
+		option = next((o for o in details.options if o["value"] == self.missed_punch), None)
+		if not option:
+			frappe.throw(
+				_("{0} is not missing on {1}. Choose {2}.").format(
+					frappe.bold(_(self.missed_punch)),
+					frappe.bold(format_date(self.from_date)),
+					comma_or([frappe.bold(_(o["value"])) for o in details.options], add_quotes=False),
+				),
+				title=_("Missed Punch"),
+			)
+		if not self.shift and details.shift:
+			self.shift = details.shift
+		self._missed_punch_status = option["status"]
+
+	def get_missed_punch_status(self) -> str:
+		if getattr(self, "_missed_punch_status", None) is None:
+			details = get_missed_punch_details(self.employee, self.from_date, self.shift)
+			option = next((o for o in details.options if o["value"] == self.missed_punch), None)
+			self._missed_punch_status = option["status"] if option else "Present"
+		return self._missed_punch_status
 
 	def validate_half_day(self):
 		if self.half_day:
@@ -361,9 +423,28 @@ class AttendanceRequest(Document):
 			pluck="name",
 			limit=1,
 		)
+		if not attendance and self.shift:
+			# attendance marked under another shift whose hours overlap this one (the employee's shift
+			# has changed since that day): a second record would be refused as an overlapping shift
+			# attendance, so that record is updated instead and keeps its shift
+			for d in frappe.get_all(
+				"Attendance",
+				filters={
+					"employee": self.employee,
+					"attendance_date": attendance_date,
+					"docstatus": ("!=", 2),
+					"shift": ("is", "set"),
+				},
+				fields=["name", "shift"],
+			):
+				if has_overlapping_timings(self.shift, d.shift):
+					attendance = [d.name]
+					break
 		return frappe.get_doc("Attendance", attendance[0]) if attendance else None
 
 	def get_attendance_status(self, attendance_date: str) -> str:
+		if self.reason == "Missed Punch":
+			return self.get_missed_punch_status()
 		if self.half_day and date_diff(getdate(self.half_day_date), getdate(attendance_date)) == 0:
 			return "Half Day"
 		elif self.reason == "Work From Home":
@@ -419,3 +500,102 @@ class AttendanceRequest(Document):
 					)
 
 		return attendance_warnings
+
+
+def get_missed_punch_details(employee: str, date, shift: str | None = None) -> frappe._dict:
+	"""For a Missed Punch request on `date`: the punches that day, which of them are missing and
+	what the day becomes when one is regularised.
+	{"eligible": bool, "message": why not, "punches": "13:19 IN, 18:32 OUT", "status": the day's
+	attendance status, "shift": shift name, "options": [{"value", "label", "status"}]}.
+	Eligible = a working day with at least one punch whose attendance is not Present yet. On a shift
+	that decides attendance by punch windows the options are the windows not hit (morning check-in,
+	mid-day punch, check-out at the shift end), each with the status the day gets; an option that
+	leaves the status as it is is not offered. On a working-hours shift only the morning and the
+	evening punch can be regularised and the day becomes Present."""
+	from hrms.hr.doctype.employee_checkin.employee_checkin import calculate_working_hours
+
+	date = getdate(date)
+	logs = frappe.get_all(
+		"Employee Checkin",
+		filters=[["employee", "=", employee], ["time", ">=", date], ["time", "<", add_days(date, 2)]],
+		fields=["name", "time", "log_type", "shift", "shift_start", "shift_end"],
+		order_by="time",
+	)
+	logs = [log for log in logs if getdate(log.shift_start or log.time) == date]
+	attendance = frappe.db.get_value(
+		"Attendance",
+		{"employee": employee, "attendance_date": date, "docstatus": 1},
+		["name", "status", "shift"],
+		as_dict=True,
+	)
+	result = frappe._dict(
+		eligible=False,
+		message="",
+		punches=", ".join(f"{format_time(log.time, 'HH:mm')} {log.log_type or ''}".strip() for log in logs),
+		status=attendance.status if attendance else None,
+		shift=logs[0].shift if logs and logs[0].shift else (attendance.shift if attendance else shift),
+		options=[],
+	)
+	bold_date = frappe.bold(format_date(date))
+	if is_holiday(employee, date):
+		result.message = _("{0} is a holiday; there is no punch to regularise.").format(bold_date)
+		return result
+	if not logs:
+		result.message = _(
+			"No punch on {0}: a missed punch request needs at least one punch that day. Apply for leave instead."
+		).format(bold_date)
+		return result
+	if attendance and attendance.status == "Present":
+		result.message = _("Attendance on {0} is already Present.").format(bold_date)
+		return result
+	if not result.shift:
+		result.shift = frappe.db.get_value("Employee", employee, "default_shift")
+	if not result.shift:
+		result.message = _("No shift is set for {0}; HR has to mark the day.").format(bold_date)
+		return result
+
+	shift_doc = frappe.get_cached_doc("Shift Type", result.shift)
+	log = logs[0]
+	if not (log.shift_start and log.shift_end):
+		log.shift_start = datetime.combine(date, get_time(shift_doc.start_time))
+		log.shift_end = datetime.combine(date, get_time(shift_doc.end_time))
+		if log.shift_end <= log.shift_start:
+			log.shift_end += timedelta(days=1)
+	_hours, in_time, out_time = calculate_working_hours(
+		logs, shift_doc.determine_check_in_and_check_out, shift_doc.working_hours_calculation_based_on
+	)
+
+	options = []
+	if shift_doc.attendance_rule == "Punch Windows":
+		hit = shift_doc.get_punch_windows_hit(log, in_time, out_time)
+		for value, window in MISSED_PUNCH_WINDOWS.items():
+			if window not in hit:
+				options.append({"value": value, "status": shift_doc.get_status_by_windows_hit(hit | {window})})
+	else:
+		late_grace = timedelta(minutes=cint(shift_doc.late_entry_grace_period))
+		early_grace = timedelta(minutes=cint(shift_doc.early_exit_grace_period))
+		if not in_time or in_time > log.shift_start + late_grace:
+			options.append({"value": "Morning punch", "status": "Present"})
+		if not out_time or out_time < log.shift_end - early_grace:
+			options.append({"value": "Evening punch", "status": "Present"})
+
+	for option in options:
+		if option["status"] != result.status:
+			option["label"] = _("{0} (day becomes {1})").format(_(option["value"]), _(option["status"]))
+			result.options.append(option)
+	if not result.options:
+		result.message = _(
+			"Regularising one punch would not change the attendance on {0} ({1}); contact HR."
+		).format(bold_date, _(result.status or "not marked"))
+		return result
+	result.eligible = True
+	return result
+
+
+@frappe.whitelist()
+def get_missed_punch_options(employee: str, date: str, shift: str | None = None) -> dict:
+	"""The Missed Punch choices for the request forms (desk and mobile app): see get_missed_punch_details."""
+	own = frappe.db.get_value("Employee", employee, "user_id") == frappe.session.user
+	if not own and not frappe.has_permission("Employee", "read", employee):
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
+	return get_missed_punch_details(employee, date, shift)

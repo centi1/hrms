@@ -1,8 +1,12 @@
 # Copyright (c) 2018, Frappe Technologies Pvt. Ltd. and Contributors
 # See license.txt
 
+from datetime import datetime
+
 import frappe
-from frappe.utils import add_days, add_months, get_year_ending, get_year_start, getdate
+from frappe.utils import add_days, add_months, get_time, get_year_ending, get_year_start, getdate
+
+from erpnext.setup.doctype.employee.test_employee import make_employee
 
 from hrms.hr.doctype.attendance.attendance import mark_attendance
 from hrms.hr.doctype.attendance_request.attendance_request import OverlappingAttendanceRequestError
@@ -557,6 +561,114 @@ class TestAttendanceRequest(HRMSTestSuite):
 		attendance = frappe.db.get_value("Attendance", attendance_name, ["status", "shift"], as_dict=True)
 		self.assertEqual(attendance.status, "Present")
 		self.assertEqual(attendance.shift, shift_type.name)
+
+	def test_overwrite_attendance_under_a_previous_overlapping_shift(self):
+		# the day was marked under the employee's shift of that time; the default shift has changed
+		# since, so the request fetches the new one: the old record is updated, not duplicated
+		# (Athen 2026-11-10: "Attendance ... already marked for an overlapping shift Workshop")
+		frappe.db.delete("Holiday", {"parent": self.holiday_list})
+		old_shift = create_shift("Test Old Default Shift", "09:00:00", "18:30:00")
+		new_shift = create_shift("Test New Default Shift", "09:10:00", "18:30:00")
+		attendance_name = mark_attendance(self.employee.name, self.date, "Absent", shift=old_shift.name)
+		frappe.db.set_value("Employee", self.employee.name, "default_shift", new_shift.name)
+		self.addCleanup(frappe.db.set_value, "Employee", self.employee.name, "default_shift", None)
+
+		request = create_attendance_request(
+			employee=self.employee.name, from_date=self.date, to_date=self.date
+		)
+
+		self.assertEqual(request.shift, new_shift.name)
+		attendance = frappe.db.get_value(
+			"Attendance", attendance_name, ["status", "shift", "attendance_request"], as_dict=True
+		)
+		self.assertEqual(
+			(attendance.status, attendance.shift, attendance.attendance_request),
+			("Present", old_shift.name, request.name),
+		)
+		self.assertEqual(
+			frappe.db.count("Attendance", {"employee": self.employee.name, "attendance_date": self.date}), 1
+		)
+
+	def test_missed_punch_request(self):
+		# Athen's rule (user 2026-11-10): one date on which the employee did punch, a choice among
+		# the punches missing that day, and the day becomes what that punch would have made it
+		from hrms.hr.doctype.attendance_request.attendance_request import get_missed_punch_details
+		from hrms.hr.doctype.employee_checkin.test_employee_checkin import make_checkin
+		from hrms.hr.doctype.shift_type.test_shift_type import make_shift_assignment, setup_shift_type
+
+		frappe.db.delete("Holiday", {"parent": self.holiday_list})
+		shift = setup_shift_type(
+			shift_type="Missed Punch Test",
+			start_time="09:00:00",
+			end_time="18:30:00",
+			determine_check_in_and_check_out="Strictly based on Log Type in Employee Checkin",
+			attendance_rule="Punch Windows",
+			morning_check_in_until="09:10:59",
+			half_day_window_start="13:00:00",
+			half_day_window_end="14:00:00",
+			status_for_other_punches="Absent",
+		)
+		date = self.date
+
+		def punch(time, log_type):
+			return make_checkin(employee, datetime.combine(date, get_time(time)), log_type=log_type)
+
+		def options(employee):
+			details = get_missed_punch_details(employee, date)
+			return details.eligible, details.message, [(o["value"], o["status"]) for o in details.options]
+
+		# afternoon check-in and check-out at the shift end: only the morning punch is missing
+		employee = make_employee("test_missed_punch_half@example.com", company="_Test Company")
+		make_shift_assignment(shift.name, employee, date)
+		punch("13:19:00", "IN")
+		punch("18:32:00", "OUT")
+		attendance = mark_attendance(employee, date, "Half Day", shift=shift.name)
+		self.assertEqual(options(employee), (True, "", [("Morning punch", "Present")]))
+
+		# only the evening punch: the morning punch makes the day Present, a lunch-time one a half day
+		other = make_employee("test_missed_punch_evening@example.com", company="_Test Company")
+		make_shift_assignment(shift.name, other, date)
+		make_checkin(other, datetime.combine(date, get_time("18:32:00")), log_type="OUT")
+		mark_attendance(other, date, "Absent", shift=shift.name)
+		self.assertEqual(
+			options(other), (True, "", [("Morning punch", "Present"), ("Lunch-time punch", "Half Day")])
+		)
+
+		# no punch at all is not a missed punch
+		nobody = make_employee("test_missed_punch_none@example.com", company="_Test Company")
+		make_shift_assignment(shift.name, nobody, date)
+		eligible, message, _options = options(nobody)
+		self.assertFalse(eligible)
+		self.assertIn("No punch on", message)
+
+		# the request: one day only, no half day, and only a punch that is missing
+		request = frappe.get_doc(
+			{
+				"doctype": "Attendance Request",
+				"employee": employee,
+				"from_date": date,
+				"to_date": add_days(date, 1),
+				"half_day": 1,
+				"half_day_date": date,
+				"reason": "Missed Punch",
+				"missed_punch": "Lunch-time punch",
+				"company": "_Test Company",
+			}
+		)
+		self.assertRaises(frappe.ValidationError, request.insert)
+		request.missed_punch = "Morning punch"
+		request.insert()
+		self.assertEqual((request.to_date, request.half_day, request.shift), (date, 0, shift.name))
+
+		request.submit()
+		attendance = frappe.db.get_value(
+			"Attendance", attendance, ["status", "shift", "attendance_request"], as_dict=True
+		)
+		self.assertEqual(
+			(attendance.status, attendance.shift, attendance.attendance_request),
+			("Present", shift.name, request.name),
+		)
+		self.assertFalse(get_missed_punch_details(employee, date).eligible)
 
 	@HRMSTestSuite.change_settings("HR Settings", {"allow_multiple_shift_assignments": True})
 	def test_overlap_with_different_shifts(self):
